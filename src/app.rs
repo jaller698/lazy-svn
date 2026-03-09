@@ -1,5 +1,5 @@
 use ratatui::{
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::ListState,
 };
@@ -338,11 +338,18 @@ impl App {
                     "Revision {}: {} | {} | {}",
                     rev.revision, rev.author, rev.date, rev.message
                 );
+                //format the diff output with colored lines and insert the revision info at the top
+                let revision_info = Line::from(Span::styled(
+                    revision_info,
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ));
 
-                self.current_diff = vec![Line::from(revision_info)]
-                    .into_iter()
-                    .chain(Self::style_diff_output(&output))
-                    .collect();
+                let mut diff_lines = Self::style_diff_output(&output);
+                diff_lines.insert(0, Line::from(revision_info));
+                self.current_diff = diff_lines;
+
                 self.diff_scroll = 0;
             }
         }

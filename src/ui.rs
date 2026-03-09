@@ -174,6 +174,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     };
 
     // Pass the pre-styled lines from our app state
+    // But also ensure the lines are wrapped in a Paragraph with the correct border and scroll offset
     let diff_paragraph = Paragraph::new(app.current_diff.clone())
         .block(
             Block::default()
@@ -181,7 +182,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(diff_style)),
         )
-        .scroll((app.diff_scroll, 0));
+        .scroll((app.diff_scroll, 0))
+        .wrap(ratatui::widgets::Wrap { trim: false });
 
     f.render_widget(diff_paragraph, chunks[1]);
 
