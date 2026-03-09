@@ -228,17 +228,40 @@ impl App {
             return false;
         }
 
-        let mut cmd = Command::new("svn");
-        cmd.arg("commit").arg("-m").arg(&message);
-
-        // `file_list` is populated from `svn status` and contains only file paths,
-        // not bare directory entries, so it is safe to pass directly to `svn commit`.
+        // `file_list` is populated from `svn status`; the `?` status means the file
+        // is not under version control — SVN refuses to commit such paths (E200009).
         let files: Vec<String> = if self.selected_files.is_empty() {
-            self.file_list.iter().map(|f| f.path.clone()).collect()
+            // Commit all versioned changed files; skip unversioned `?` entries.
+            self.file_list
+                .iter()
+                .filter(|f| f.status != "?")
+                .map(|f| f.path.clone())
+                .collect()
         } else {
-            self.selected_files.iter().cloned().collect()
+            // Commit only the selected files that are under version control.
+            let status_map: std::collections::HashMap<&str, &str> = self
+                .file_list
+                .iter()
+                .map(|f| (f.path.as_str(), f.status.as_str()))
+                .collect();
+            self.selected_files
+                .iter()
+                .filter(|p| {
+                    status_map
+                        .get(p.as_str())
+                        .map_or(false, |&s| s != "?")
+                })
+                .cloned()
+                .collect()
         };
 
+        if files.is_empty() {
+            warn!("do_commit: no committable files (all files may be unversioned or filtered out)");
+            return false;
+        }
+
+        let mut cmd = Command::new("svn");
+        cmd.arg("commit").arg("-m").arg(&message);
         for path in &files {
             cmd.arg(path);
         }
