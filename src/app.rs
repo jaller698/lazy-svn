@@ -300,16 +300,15 @@ impl App {
         // SVN accepts them and doesn't return E200009.
         let unversioned: Vec<&str> = files
             .iter()
-            .filter(|p| {
-                status_map
-                    .get(p.as_str())
-                    .map_or(false, |&s| s == "?")
-            })
+            .filter(|p| status_map.get(p.as_str()).map_or(false, |&s| s == "?"))
             .map(|p| p.as_str())
             .collect();
 
         if !unversioned.is_empty() {
-            info!("Running svn add for {} unversioned file(s)", unversioned.len());
+            info!(
+                "Running svn add for {} unversioned file(s)",
+                unversioned.len()
+            );
             let mut add_cmd = Command::new("svn");
             add_cmd.arg("add").args(&unversioned);
             match add_cmd.output() {
@@ -322,6 +321,32 @@ impl App {
                 }
                 Err(e) => {
                     error!("Failed to run svn add: {e}");
+                    return false;
+                }
+            }
+        }
+
+        // Similarly, run `svn delete` on any missing (`!`) files so that they are removed from the commit.
+        let missing: Vec<&str> = files
+            .iter()
+            .filter(|p| status_map.get(p.as_str()).map_or(false, |&s| s == "!"))
+            .map(|p| p.as_str())
+            .collect();
+
+        if !missing.is_empty() {
+            info!("Running svn delete for {} missing file(s)", missing.len());
+            let mut delete_cmd = Command::new("svn");
+            delete_cmd.arg("delete").args(&missing);
+            match delete_cmd.output() {
+                Ok(output) => {
+                    if !output.status.success() {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        error!("svn delete failed for {} file(s): {stderr}", missing.len());
+                        return false;
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to run svn delete: {e}");
                     return false;
                 }
             }

@@ -2,7 +2,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 
@@ -345,26 +345,6 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         f.render_widget(Clear, area);
         f.render_widget(popup, area);
     }
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Fill(1),
-            Constraint::Percentage(percent_y),
-            Constraint::Fill(1),
-        ])
-        .split(r);
-
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Fill(1),
-            Constraint::Percentage(percent_x),
-            Constraint::Fill(1),
-        ])
-        .split(popup_layout[1])[1]
 }
 
 #[cfg(test)]

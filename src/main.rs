@@ -15,7 +15,7 @@ use ratatui::{
     backend::{Backend, CrosstermBackend},
 };
 use simplelog::{CombinedLogger, Config, WriteLogger};
-use std::{error::Error, fs, io, path::PathBuf};
+use std::{error::Error, fs, io, path::PathBuf, process::ExitCode};
 
 use app::App;
 use types::{ActiveWindow, CommitField};
@@ -78,7 +78,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
     loop {
-        terminal.draw(|f| ui(f, app));
+        if terminal.draw(|f| ui(f, app)).is_err() {
+            log::error!("Error drawing UI");
+            return io::Result::Err(io::Error::new(io::ErrorKind::Other, "Failed to draw UI"));
+        }
         if let Event::Key(key) = event::read()? {
             if key.kind == KeyEventKind::Press {
                 // When the commit popup is open, all keystrokes go to the active field.
