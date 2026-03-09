@@ -15,7 +15,7 @@ use ratatui::{
     backend::{Backend, CrosstermBackend},
 };
 use simplelog::{CombinedLogger, Config, WriteLogger};
-use std::{error::Error, fs, io, path::PathBuf, process::ExitCode};
+use std::{error::Error, fs, io, path::PathBuf};
 
 use app::App;
 use types::{ActiveWindow, CommitField};
