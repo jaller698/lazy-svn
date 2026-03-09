@@ -241,8 +241,15 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                             app.toggle_file_selection();
                         }
                     }
-                    // 'a': open commit popup from the ChangedFiles panel.
+                    // 'a': run `svn add` on marked unversioned files.
                     KeyCode::Char('a') => {
+                        if app.active_window == ActiveWindow::ChangedFiles {
+                            app.svn_add_marked();
+                            log::debug!("Ran svn add on marked files");
+                        }
+                    }
+                    // 'c': open commit popup from the ChangedFiles panel.
+                    KeyCode::Char('c') => {
                         if app.active_window == ActiveWindow::ChangedFiles {
                             app.commit_message.clear();
                             app.active_window = ActiveWindow::Commit;

@@ -116,4 +116,12 @@ pub const KEYBINDINGS: &[Keybinding] = &[
         key: "Space",
         description: "Toggle folder (Files panel only)",
     },
+    Keybinding {
+        key: "a",
+        description: "Add marked unversioned files (Files panel only)",
+    },
+    Keybinding {
+        key: "c",
+        description: "Open commit popup (Files panel only)",
+    },
 ];

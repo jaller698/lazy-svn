@@ -101,6 +101,7 @@ impl App {
             file_list_state: ListState::default(),
             visible_items: Vec::new(),
             collapsed_dirs: HashSet::new(),
+            selected_files: HashSet::new(),
             branch_list: Vec::new(),
             branch_list_state: ListState::default(),
             current_diff: vec![String::from("Select a file to see diff").into()],
@@ -109,6 +110,10 @@ impl App {
             revision_list_state: ListState::default(),
             working_copy_revision: None,
             repository_url: None,
+            commit_message: String::new(),
+            commit_username: String::new(),
+            commit_password: String::new(),
+            commit_active_field: CommitField::Message,
         }
     }
 
@@ -265,6 +270,51 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Run `svn add` on the marked files that have unversioned (`?`) status.
+    /// If no files are marked, adds all unversioned files in the file list.
+    /// Refreshes the status afterwards.
+    pub fn svn_add_marked(&mut self) {
+        let status_map: std::collections::HashMap<&str, &str> = self
+            .file_list
+            .iter()
+            .map(|f| (f.path.as_str(), f.status.as_str()))
+            .collect();
+
+        let candidates: Vec<&str> = if self.selected_files.is_empty() {
+            self.file_list
+                .iter()
+                .filter(|f| f.status == "?")
+                .map(|f| f.path.as_str())
+                .collect()
+        } else {
+            self.selected_files
+                .iter()
+                .filter(|p| status_map.get(p.as_str()).map_or(false, |&s| s == "?"))
+                .map(|p| p.as_str())
+                .collect()
+        };
+
+        if candidates.is_empty() {
+            debug!("svn_add_marked: no unversioned files to add");
+            return;
+        }
+
+        info!("Running svn add for {} file(s)", candidates.len());
+        let mut cmd = Command::new("svn");
+        cmd.arg("add").args(&candidates);
+        match cmd.output() {
+            Ok(output) => {
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    error!("svn add failed: {stderr}");
+                }
+            }
+            Err(e) => error!("Failed to run svn add: {e}"),
+        }
+
+        self.refresh_status();
     }
 
     /// Run `svn commit` with the current `commit_message`.
