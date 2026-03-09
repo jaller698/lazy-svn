@@ -257,19 +257,102 @@ impl App {
         }
     }
 
-    /// Toggle whether the currently selected file is marked for the next commit.
-    /// Has no effect when the selected item is a directory.
+    /// Toggle whether the currently selected item is marked.
+    /// - For a **file**: toggle that single file.
+    /// - For a **directory**: toggle all files under that directory prefix.
+    ///   If all children are already selected, they are deselected; otherwise all are selected.
     pub fn toggle_file_selection(&mut self) {
         if let Some(i) = self.file_list_state.selected() {
-            if let Some(FileTreeNode::File { path, .. }) = self.visible_items.get(i) {
-                let path = path.clone();
-                if self.selected_files.contains(&path) {
-                    self.selected_files.remove(&path);
-                } else {
-                    self.selected_files.insert(path);
+            match self.visible_items.get(i).cloned() {
+                Some(FileTreeNode::File { path, .. }) => {
+                    if self.selected_files.contains(&path) {
+                        self.selected_files.remove(&path);
+                    } else {
+                        self.selected_files.insert(path);
+                    }
                 }
+                Some(FileTreeNode::Dir { path: dir_path, .. }) => {
+                    // `dir_path` always ends with `/` (e.g. `"src/"`), so
+                    // `starts_with` only matches real children and not paths
+                    // that merely share a common prefix (e.g. `"srcbar/..."`).
+                    let children: Vec<String> = self
+                        .file_list
+                        .iter()
+                        .filter(|f| f.path.starts_with(dir_path.as_str()))
+                        .map(|f| f.path.clone())
+                        .collect();
+
+                    if children.is_empty() {
+                        return;
+                    }
+
+                    let all_selected = children
+                        .iter()
+                        .all(|p| self.selected_files.contains(p));
+
+                    if all_selected {
+                        for p in &children {
+                            self.selected_files.remove(p);
+                        }
+                    } else {
+                        for p in children {
+                            self.selected_files.insert(p);
+                        }
+                    }
+                }
+                None => {}
             }
         }
+    }
+
+    /// Run `svn delete` on the marked files/folders.
+    /// If no files are marked, operates on the currently selected item.
+    /// Refreshes the status afterwards.
+    pub fn svn_delete_marked(&mut self) {
+        let targets: Vec<String> = if self.selected_files.is_empty() {
+            // Fall back to whatever item is currently highlighted.
+            if let Some(i) = self.file_list_state.selected() {
+                match self.visible_items.get(i) {
+                    Some(FileTreeNode::File { path, .. }) => vec![path.clone()],
+                    Some(FileTreeNode::Dir { path, .. }) => {
+                        // `path` always ends with `/` so `starts_with` is an
+                        // exact directory-boundary match (won't match sibling
+                        // dirs sharing a common prefix).
+                        self.file_list
+                            .iter()
+                            .filter(|f| f.path.starts_with(path.as_str()))
+                            .map(|f| f.path.clone())
+                            .collect()
+                    }
+                    None => vec![],
+                }
+            } else {
+                vec![]
+            }
+        } else {
+            self.selected_files.iter().cloned().collect()
+        };
+
+        if targets.is_empty() {
+            debug!("svn_delete_marked: nothing to delete");
+            return;
+        }
+
+        info!("Running svn delete for {} item(s)", targets.len());
+        let mut cmd = Command::new("svn");
+        cmd.arg("delete").args(&targets);
+        match cmd.output() {
+            Ok(output) => {
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    error!("svn delete failed: {stderr}");
+                }
+            }
+            Err(e) => error!("Failed to run svn delete: {e}"),
+        }
+
+        self.selected_files.clear();
+        self.refresh_status();
     }
 
     /// Run `svn add` on the marked files that have unversioned (`?`) status.

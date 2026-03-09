@@ -248,6 +248,13 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                             log::debug!("Ran svn add on marked files");
                         }
                     }
+                    // 'd': run `svn delete` on marked files/folders.
+                    KeyCode::Char('d') => {
+                        if app.active_window == ActiveWindow::ChangedFiles {
+                            app.svn_delete_marked();
+                            log::debug!("Ran svn delete on marked files");
+                        }
+                    }
                     // 'c': open commit popup from the ChangedFiles panel.
                     KeyCode::Char('c') => {
                         if app.active_window == ActiveWindow::ChangedFiles {

@@ -98,7 +98,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let list = List::new(items)
         .block(
             Block::default()
-                .title(" 1: Files (j/k | Space: select | Enter: fold | a: add | c: commit) ")
+                .title(" 1: Files (j/k | Space: select | Enter: fold | a: add | d: delete | c: commit) ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color)),
         )

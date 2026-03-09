@@ -114,11 +114,15 @@ pub const KEYBINDINGS: &[Keybinding] = &[
     },
     Keybinding {
         key: "Space",
-        description: "Toggle folder (Files panel only)",
+        description: "Select file / select all children of a folder (Files panel only)",
     },
     Keybinding {
         key: "a",
         description: "Add marked unversioned files (Files panel only)",
+    },
+    Keybinding {
+        key: "d",
+        description: "Delete marked files/folders via svn delete (Files panel only)",
     },
     Keybinding {
         key: "c",
