@@ -6,6 +6,7 @@ use ratatui::{
 use std::process::Command;
 
 use crate::types::{ActiveWindow, SvnFile, SvnRevision};
+use log::{debug, error, info, warn};
 
 pub struct App {
     pub active_window: ActiveWindow,
@@ -43,6 +44,7 @@ impl App {
     }
 
     pub fn refresh_status(&mut self) {
+        debug!("Refreshing SVN status");
         let output = Command::new("svn")
             .arg("status")
             .output()
@@ -63,6 +65,8 @@ impl App {
             })
             .collect();
 
+        info!("SVN status: {} changed file(s)", self.file_list.len());
+
         if !self.file_list.is_empty() && self.file_list_state.selected().is_none() {
             self.file_list_state.select(Some(0));
             self.refresh_diff();
@@ -72,6 +76,7 @@ impl App {
     }
 
     pub fn refresh_working_copy_revision(&mut self) {
+        debug!("Refreshing working copy revision info");
         let output = Command::new("svn")
             .arg("info")
             .output()
@@ -86,11 +91,18 @@ impl App {
         self.repository_url = output
             .lines()
             .find_map(|line| line.strip_prefix("URL: ").map(|u| u.trim().to_string()));
+
+        match (&self.working_copy_revision, &self.repository_url) {
+            (Some(rev), Some(url)) => info!("Working copy: revision {rev}, url {url}"),
+            (Some(rev), None) => warn!("Working copy: revision {rev}, URL not found"),
+            (None, _) => warn!("Could not determine working copy revision"),
+        }
     }
 
     pub fn refresh_log(&mut self) {
         // Use -r HEAD:1 so that revisions on the remote that are newer than
         // the working copy are also included in the list.
+        debug!("Fetching SVN log");
         let output = Command::new("svn")
             .arg("log")
             .arg("-r")
@@ -135,6 +147,7 @@ impl App {
             self.revision_list_state.select(Some(0));
             self.refresh_revision_diff();
         }
+        info!("SVN log: {} revision(s) loaded", self.revision_list.len());
     }
 
     fn revision_number(revision: &str) -> &str {
@@ -145,7 +158,9 @@ impl App {
         if let Some(i) = self.revision_list_state.selected() {
             if let Some(rev) = self.revision_list.get(i) {
                 let rev_num = Self::revision_number(&rev.revision);
+                debug!("Fetching diff for revision {rev_num}");
                 if !rev_num.chars().all(|c| c.is_ascii_digit()) {
+                    warn!("Invalid revision number: {rev_num}");
                     self.current_diff = vec![Line::from("Invalid revision number".to_string())];
                     self.diff_scroll = 0;
                     return;
@@ -158,7 +173,10 @@ impl App {
                 let output = cmd
                     .output()
                     .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                    .unwrap_or_else(|_| "Error fetching revision diff".into());
+                    .unwrap_or_else(|e| {
+                        error!("Failed to fetch revision diff for {rev_num}: {e}");
+                        "Error fetching revision diff".into()
+                    });
 
                 self.current_diff = Self::style_diff_output(&output);
                 self.diff_scroll = 0;
@@ -209,8 +227,10 @@ impl App {
             if let Some(rev) = self.revision_list.get(i) {
                 let rev_num = Self::revision_number(&rev.revision);
                 if !rev_num.chars().all(|c| c.is_ascii_digit()) {
+                    warn!("update_to_revision: invalid revision number: {rev_num}");
                     return;
                 }
+                info!("Updating working copy to revision {rev_num}");
                 Command::new("svn")
                     .arg("update")
                     .arg("-r")
@@ -225,12 +245,16 @@ impl App {
     pub fn refresh_diff(&mut self) {
         if let Some(i) = self.file_list_state.selected() {
             if let Some(file) = self.file_list.get(i) {
+                debug!("Fetching diff for file: {}", file.path);
                 let output = Command::new("svn")
                     .arg("diff")
                     .arg(&file.path)
                     .output()
                     .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                    .unwrap_or_else(|_| "Error fetching diff".into());
+                    .unwrap_or_else(|e| {
+                        error!("Failed to fetch diff for {}: {e}", file.path);
+                        "Error fetching diff".into()
+                    });
 
                 self.current_diff = Self::style_diff_output(&output);
                 self.diff_scroll = 0;
@@ -266,6 +290,7 @@ impl App {
 
     pub fn refresh_branches(&mut self) {
         // Get the working copy URL and derive the branches URL by replacing /trunk with /branches
+        debug!("Refreshing branch list");
         let wc_url = Command::new("svn")
             .arg("info")
             .arg("--show-item")
@@ -278,6 +303,7 @@ impl App {
         let wc_url = match wc_url {
             Some(url) if !url.is_empty() => url,
             _ => {
+                warn!("Could not determine working copy URL for branch listing");
                 self.branch_list = vec!["Error: could not determine working copy URL".to_string()];
                 self.branch_list_state = ListState::default();
                 return;
@@ -285,20 +311,21 @@ impl App {
         };
 
         let branches_url = wc_url.replace("/trunk", "/branches");
+        debug!("Listing branches at {branches_url}");
         let result = Command::new("svn").arg("list").arg(&branches_url).output();
 
         let output = match result {
             Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
             Ok(o) => {
                 let stderr = String::from_utf8_lossy(&o.stderr).to_string();
-                self.branch_list = vec![format!(
-                    "Error: {}",
-                    stderr.lines().next().unwrap_or("svn list failed")
-                )];
+                let msg = stderr.lines().next().unwrap_or("svn list failed").to_string();
+                error!("svn list failed for {branches_url}: {msg}");
+                self.branch_list = vec![format!("Error: {msg}")];
                 self.branch_list_state = ListState::default();
                 return;
             }
-            Err(_) => {
+            Err(e) => {
+                error!("Failed to run svn list: {e}");
                 self.branch_list = vec!["Error: failed to run svn".to_string()];
                 self.branch_list_state = ListState::default();
                 return;
@@ -311,6 +338,8 @@ impl App {
             .map(|line| line.trim_end_matches('/').to_string())
             .filter(|line| !line.is_empty())
             .collect();
+
+        info!("Branch list: {} branch(es) loaded", self.branch_list.len());
 
         if !self.branch_list.is_empty() && self.branch_list_state.selected().is_none() {
             self.branch_list_state.select(Some(0));

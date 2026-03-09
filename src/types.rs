@@ -1,4 +1,4 @@
-#[derive(PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum ActiveWindow {
     ChangedFiles,
     Branches,
