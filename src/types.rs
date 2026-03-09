@@ -1,9 +1,18 @@
+/// Which field the cursor is in when the commit popup is open.
+#[derive(Debug, PartialEq, Clone)]
+pub enum CommitField {
+    Message,
+    Username,
+    Password,
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum ActiveWindow {
     ChangedFiles,
     Branches,
     Revisions,
     Diff,
+    Commit,
     Help,
 }
 

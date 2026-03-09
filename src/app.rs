@@ -6,7 +6,7 @@ use ratatui::{
 use std::collections::{BTreeSet, HashSet};
 use std::process::Command;
 
-use crate::types::{ActiveWindow, FileTreeNode, SvnFile, SvnRevision};
+use crate::types::{ActiveWindow, CommitField, FileTreeNode, SvnFile, SvnRevision};
 use log::{debug, error, info, warn};
 
 pub struct App {
@@ -20,6 +20,8 @@ pub struct App {
     pub visible_items: Vec<FileTreeNode>,
     /// Set of directory paths (with trailing `/`) that are currently collapsed.
     pub collapsed_dirs: HashSet<String>,
+    /// Set of file paths that the user has marked for the next commit.
+    pub selected_files: HashSet<String>,
     pub branch_list: Vec<String>,
     pub branch_list_state: ListState,
     pub current_diff: Vec<Line<'static>>,
@@ -28,6 +30,19 @@ pub struct App {
     pub revision_list_state: ListState,
     pub working_copy_revision: Option<String>,
     pub repository_url: Option<String>,
+    /// Commit message being composed in the commit popup.
+    pub commit_message: String,
+    /// Optional SVN username for the commit.
+    pub commit_username: String,
+    /// Optional SVN password for the commit.
+    /// The password is stored as a plain `String` and is cleared immediately after
+    /// the commit completes or is cancelled. It is never written to disk by this
+    /// application, but may briefly be visible in process argument lists when passed
+    /// to `svn` via `--password`. Users who require stronger security should rely on
+    /// SVN's own credential caching (~/.subversion/auth) instead.
+    pub commit_password: String,
+    /// Which field is currently active in the commit popup.
+    pub commit_active_field: CommitField,
 }
 
 impl App {
@@ -39,6 +54,7 @@ impl App {
             file_list_state: ListState::default(),
             visible_items: Vec::new(),
             collapsed_dirs: HashSet::new(),
+            selected_files: HashSet::new(),
             branch_list: Vec::new(),
             branch_list_state: ListState::default(),
             current_diff: vec![String::from("Select a file to see diff").into()],
@@ -47,6 +63,10 @@ impl App {
             revision_list_state: ListState::default(),
             working_copy_revision: None,
             repository_url: None,
+            commit_message: String::new(),
+            commit_username: String::new(),
+            commit_password: String::new(),
+            commit_active_field: CommitField::Message,
         };
         app.refresh_status();
         app.refresh_branches();
@@ -230,6 +250,139 @@ impl App {
                 self.rebuild_visible_items();
             }
         }
+    }
+
+    /// Toggle whether the currently selected file is marked for the next commit.
+    /// Has no effect when the selected item is a directory.
+    pub fn toggle_file_selection(&mut self) {
+        if let Some(i) = self.file_list_state.selected() {
+            if let Some(FileTreeNode::File { path, .. }) = self.visible_items.get(i) {
+                let path = path.clone();
+                if self.selected_files.contains(&path) {
+                    self.selected_files.remove(&path);
+                } else {
+                    self.selected_files.insert(path);
+                }
+            }
+        }
+    }
+
+    /// Run `svn commit` with the current `commit_message`.
+    /// Commits the explicitly selected files, or all changed files if none are selected.
+    /// Clears the selection and commit message on completion and refreshes state.
+    /// Returns `false` when the commit was not attempted (e.g. empty message).
+    pub fn do_commit(&mut self) -> bool {
+        let message = self.commit_message.trim().to_string();
+        if message.is_empty() {
+            warn!("do_commit: empty commit message, aborting");
+            return false;
+        }
+
+        // Build status map to identify unversioned (`?`) files.
+        let status_map: std::collections::HashMap<&str, &str> = self
+            .file_list
+            .iter()
+            .map(|f| (f.path.as_str(), f.status.as_str()))
+            .collect();
+
+        let files: Vec<String> = if self.selected_files.is_empty() {
+            self.file_list.iter().map(|f| f.path.clone()).collect()
+        } else {
+            self.selected_files.iter().cloned().collect()
+        };
+
+        if files.is_empty() {
+            warn!("do_commit: no files to commit");
+            return false;
+        }
+
+        // Run `svn add` on any unversioned (`?`) files before committing so that
+        // SVN accepts them and doesn't return E200009.
+        let unversioned: Vec<&str> = files
+            .iter()
+            .filter(|p| status_map.get(p.as_str()).map_or(false, |&s| s == "?"))
+            .map(|p| p.as_str())
+            .collect();
+
+        if !unversioned.is_empty() {
+            info!(
+                "Running svn add for {} unversioned file(s)",
+                unversioned.len()
+            );
+            let mut add_cmd = Command::new("svn");
+            add_cmd.arg("add").args(&unversioned);
+            match add_cmd.output() {
+                Ok(output) => {
+                    if !output.status.success() {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        error!("svn add failed for {} file(s): {stderr}", unversioned.len());
+                        return false;
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to run svn add: {e}");
+                    return false;
+                }
+            }
+        }
+
+        // Similarly, run `svn delete` on any missing (`!`) files so that they are removed from the commit.
+        let missing: Vec<&str> = files
+            .iter()
+            .filter(|p| status_map.get(p.as_str()).map_or(false, |&s| s == "!"))
+            .map(|p| p.as_str())
+            .collect();
+
+        if !missing.is_empty() {
+            info!("Running svn delete for {} missing file(s)", missing.len());
+            let mut delete_cmd = Command::new("svn");
+            delete_cmd.arg("delete").args(&missing);
+            match delete_cmd.output() {
+                Ok(output) => {
+                    if !output.status.success() {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        error!("svn delete failed for {} file(s): {stderr}", missing.len());
+                        return false;
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to run svn delete: {e}");
+                    return false;
+                }
+            }
+        }
+
+        let mut cmd = Command::new("svn");
+        cmd.arg("commit").arg("-m").arg(&message);
+        if !self.commit_username.is_empty() {
+            cmd.arg("--username").arg(&self.commit_username);
+        }
+        if !self.commit_password.is_empty() {
+            cmd.arg("--password").arg(&self.commit_password);
+        }
+        cmd.args(&files);
+
+        info!("Running svn commit for {} file(s)", files.len());
+        match cmd.output() {
+            Ok(output) => {
+                if output.status.success() {
+                    info!("svn commit succeeded");
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    error!("svn commit failed: {stderr}");
+                }
+            }
+            Err(e) => error!("Failed to run svn commit: {e}"),
+        }
+
+        self.selected_files.clear();
+        self.commit_message.clear();
+        self.commit_username.clear();
+        self.commit_password.clear();
+        self.commit_active_field = CommitField::Message;
+        self.active_window = ActiveWindow::ChangedFiles;
+        self.refresh_status();
+        true
     }
 
     pub fn refresh_working_copy_revision(&mut self) {

@@ -3,7 +3,9 @@ mod types;
 mod ui;
 
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -13,10 +15,10 @@ use ratatui::{
     backend::{Backend, CrosstermBackend},
 };
 use simplelog::{CombinedLogger, Config, WriteLogger};
-use std::{error::Error, fs, io, path::PathBuf};
+use std::{error::Error, fs, io, path::PathBuf, process::ExitCode};
 
 use app::App;
-use types::ActiveWindow;
+use types::{ActiveWindow, CommitField};
 use ui::ui;
 
 fn init_logger() -> Result<(), Box<dyn Error>> {
@@ -76,9 +78,75 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
     loop {
-        terminal.draw(|f| ui(f, app));
+        if terminal.draw(|f| ui(f, app)).is_err() {
+            log::error!("Error drawing UI");
+            return io::Result::Err(io::Error::new(io::ErrorKind::Other, "Failed to draw UI"));
+        }
         if let Event::Key(key) = event::read()? {
             if key.kind == KeyEventKind::Press {
+                // When the commit popup is open, all keystrokes go to the active field.
+                if app.active_window == ActiveWindow::Commit {
+                    match key.code {
+                        KeyCode::Esc => {
+                            app.active_window = ActiveWindow::ChangedFiles;
+                            app.commit_message.clear();
+                            app.commit_username.clear();
+                            app.commit_password.clear();
+                            app.commit_active_field = CommitField::Message;
+                            log::debug!("Commit cancelled");
+                        }
+                        // Ctrl+Enter submits from any field.
+                        KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            log::info!("User confirmed commit (Ctrl+Enter)");
+                            app.do_commit();
+                        }
+                        // Plain Enter: newline in the message field, advance focus in other fields.
+                        KeyCode::Enter => match app.commit_active_field {
+                            CommitField::Message => app.commit_message.push('\n'),
+                            CommitField::Username => {
+                                app.commit_active_field = CommitField::Password;
+                            }
+                            CommitField::Password => {
+                                log::info!("User confirmed commit (Enter on password)");
+                                app.do_commit();
+                            }
+                        },
+                        // Tab / BackTab cycle through the three fields.
+                        KeyCode::Tab => {
+                            app.commit_active_field = match app.commit_active_field {
+                                CommitField::Message => CommitField::Username,
+                                CommitField::Username => CommitField::Password,
+                                CommitField::Password => CommitField::Message,
+                            };
+                        }
+                        KeyCode::BackTab => {
+                            app.commit_active_field = match app.commit_active_field {
+                                CommitField::Message => CommitField::Password,
+                                CommitField::Username => CommitField::Message,
+                                CommitField::Password => CommitField::Username,
+                            };
+                        }
+                        KeyCode::Backspace => match app.commit_active_field {
+                            CommitField::Message => {
+                                app.commit_message.pop();
+                            }
+                            CommitField::Username => {
+                                app.commit_username.pop();
+                            }
+                            CommitField::Password => {
+                                app.commit_password.pop();
+                            }
+                        },
+                        KeyCode::Char(c) => match app.commit_active_field {
+                            CommitField::Message => app.commit_message.push(c),
+                            CommitField::Username => app.commit_username.push(c),
+                            CommitField::Password => app.commit_password.push(c),
+                        },
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 // When the help window is focused only a few keys are active.
                 if app.active_window == ActiveWindow::Help {
                     match key.code {
@@ -91,7 +159,6 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                     }
                     continue;
                 }
-
                 match key.code {
                     KeyCode::Char('?') => {
                         app.open_help();
@@ -122,6 +189,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                             ActiveWindow::Branches => ActiveWindow::Revisions,
                             ActiveWindow::Revisions => ActiveWindow::Diff,
                             ActiveWindow::Diff => ActiveWindow::ChangedFiles,
+                            ActiveWindow::Commit => ActiveWindow::ChangedFiles,
                             ActiveWindow::Help => ActiveWindow::ChangedFiles,
                         };
                         log::debug!("Switched active window to {:?}", app.active_window);
@@ -131,6 +199,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                         ActiveWindow::Branches => app.next_branch(),
                         ActiveWindow::Revisions => app.next_revision(),
                         ActiveWindow::Diff => app.scroll_diff_down(),
+                        ActiveWindow::Commit => {}
                         ActiveWindow::Help => {}
                     },
                     KeyCode::Char('k') => match app.active_window {
@@ -138,6 +207,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                         ActiveWindow::Branches => app.previous_branch(),
                         ActiveWindow::Revisions => app.previous_revision(),
                         ActiveWindow::Diff => app.scroll_diff_up(),
+                        ActiveWindow::Commit => {}
                         ActiveWindow::Help => {}
                     },
                     KeyCode::Char('}') => {
@@ -156,15 +226,27 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                         app.refresh_branches();
                         app.refresh_log();
                     }
-                    KeyCode::Enter => {
-                        if app.active_window == ActiveWindow::Revisions {
+                    // Enter: fold/unfold directory in ChangedFiles; update revision in Revisions.
+                    KeyCode::Enter => match app.active_window {
+                        ActiveWindow::ChangedFiles => app.toggle_folder(),
+                        ActiveWindow::Revisions => {
                             log::info!("Updating working copy to selected revision");
                             app.update_to_revision();
                         }
-                    }
+                        _ => {}
+                    },
+                    // Space: toggle file selection in ChangedFiles (files only).
                     KeyCode::Char(' ') => {
                         if app.active_window == ActiveWindow::ChangedFiles {
-                            app.toggle_folder();
+                            app.toggle_file_selection();
+                        }
+                    }
+                    // 'a': open commit popup from the ChangedFiles panel.
+                    KeyCode::Char('a') => {
+                        if app.active_window == ActiveWindow::ChangedFiles {
+                            app.commit_message.clear();
+                            app.active_window = ActiveWindow::Commit;
+                            log::debug!("Opened commit window");
                         }
                     }
                     _ => {}
@@ -173,4 +255,3 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
         }
     }
 }
-

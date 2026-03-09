@@ -2,12 +2,33 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Text},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    text::{Line, Span, Text},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 
 use crate::app::App;
-use crate::types::{ActiveWindow, FileTreeNode, KEYBINDINGS};
+use crate::types::{ActiveWindow, CommitField, FileTreeNode, KEYBINDINGS};
+
+/// Returns a centred rectangle of the given percentage size inside `r`.
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
+}
 
 pub fn ui(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
@@ -44,21 +65,32 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 status,
                 name,
                 depth,
-                ..
+                path,
             } => {
                 let indent = "  ".repeat(*depth);
+                let selected_marker = if app.selected_files.contains(path) {
+                    "✓"
+                } else {
+                    " "
+                };
                 let style = match status.as_str() {
                     "M" => Style::default().fg(Color::Blue),
                     "A" => Style::default().fg(Color::Green),
                     "D" => Style::default().fg(Color::Red),
                     _ => Style::default().fg(Color::White),
                 };
-                ListItem::new(format!("{}{} {}", indent, status, name)).style(style)
+                ListItem::new(format!(
+                    "{}[{}] {} {}",
+                    indent, selected_marker, status, name
+                ))
+                .style(style)
             }
         })
         .collect();
 
-    let border_color = if app.active_window == ActiveWindow::ChangedFiles {
+    let border_color = if app.active_window == ActiveWindow::ChangedFiles
+        || app.active_window == ActiveWindow::Commit
+    {
         Color::Yellow
     } else {
         Color::Gray
@@ -66,7 +98,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let list = List::new(items)
         .block(
             Block::default()
-                .title(" 1: Files (j/k | Space: fold) ")
+                .title(" 1: Files (j/k | Space: select | Enter: fold | a: commit) ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color)),
         )
@@ -187,6 +219,112 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
     f.render_widget(diff_paragraph, chunks[1]);
 
+    // Commit popup overlay
+    if app.active_window == ActiveWindow::Commit {
+        let area = centered_rect(65, 55, f.area());
+        f.render_widget(Clear, area);
+
+        let selected_count = app.selected_files.len();
+        let scope_hint = if selected_count == 0 {
+            format!("Committing all {} changed file(s)", app.file_list.len())
+        } else {
+            format!("Committing {} selected file(s)", selected_count)
+        };
+
+        // Styles for active vs inactive field labels.
+        let active_label = Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD);
+        let inactive_label = Style::default().fg(Color::DarkGray);
+        let value_style = Style::default().fg(Color::White);
+        let hint_style = Style::default().fg(Color::DarkGray);
+        let warn_style = Style::default().fg(Color::Red);
+
+        // Helper: cursor suffix shown only when a field is active.
+        let cur = |field: &CommitField| -> &str {
+            if *field == app.commit_active_field {
+                "_"
+            } else {
+                ""
+            }
+        };
+
+        // ── Message field ───────────────────────────────────────────────
+        let msg_label_style = if app.commit_active_field == CommitField::Message {
+            active_label
+        } else {
+            inactive_label
+        };
+        let mut msg_lines: Vec<Line> = vec![Line::from(Span::styled("Message:", msg_label_style))];
+        if app.commit_message.trim().is_empty() {
+            msg_lines.push(Line::from(vec![
+                Span::styled(cur(&CommitField::Message), value_style),
+                Span::styled("  (required)", warn_style),
+            ]));
+        } else {
+            // Render each line of the multi-line message; append cursor on the last.
+            let raw_lines: Vec<&str> = app.commit_message.split('\n').collect();
+            for (i, raw) in raw_lines.iter().enumerate() {
+                let is_last = i + 1 == raw_lines.len();
+                let mut spans = vec![Span::styled(*raw, value_style)];
+                if is_last {
+                    spans.push(Span::styled(cur(&CommitField::Message), value_style));
+                }
+                msg_lines.push(Line::from(spans));
+            }
+        }
+
+        // ── Username field ──────────────────────────────────────────────
+        let user_label_style = if app.commit_active_field == CommitField::Username {
+            active_label
+        } else {
+            inactive_label
+        };
+        let user_line = Line::from(vec![
+            Span::styled("Username (optional): ", user_label_style),
+            Span::styled(app.commit_username.clone(), value_style),
+            Span::styled(cur(&CommitField::Username), value_style),
+        ]);
+
+        // ── Password field ──────────────────────────────────────────────
+        let pass_label_style = if app.commit_active_field == CommitField::Password {
+            active_label
+        } else {
+            inactive_label
+        };
+        let masked = "*".repeat(app.commit_password.len());
+        let pass_line = Line::from(vec![
+            Span::styled("Password (optional): ", pass_label_style),
+            Span::styled(masked, value_style),
+            Span::styled(cur(&CommitField::Password), value_style),
+        ]);
+
+        // ── Assemble all lines ──────────────────────────────────────────
+        let mut popup_lines: Vec<Line> = vec![
+            Line::from(Span::styled(scope_hint, Style::default().fg(Color::Cyan))),
+            Line::from(""),
+        ];
+        popup_lines.extend(msg_lines);
+        popup_lines.push(Line::from(""));
+        popup_lines.push(user_line);
+        popup_lines.push(pass_line);
+        popup_lines.push(Line::from(""));
+        popup_lines.push(Line::from(Span::styled(
+            "[Ctrl+Enter] commit  [Tab] next field  [Esc] cancel",
+            hint_style,
+        )));
+
+        let popup = Paragraph::new(popup_lines)
+            .block(
+                Block::default()
+                    .title(" Commit ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow)),
+            )
+            .wrap(Wrap { trim: false });
+
+        f.render_widget(popup, area);
+    }
     if app.active_window == ActiveWindow::Help {
         let area = centered_rect(60, 60, f.area());
         let lines: Vec<Line> = std::iter::once(Line::from(" Keybindings - press ? to close"))
@@ -207,26 +345,6 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         f.render_widget(Clear, area);
         f.render_widget(popup, area);
     }
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Fill(1),
-            Constraint::Percentage(percent_y),
-            Constraint::Fill(1),
-        ])
-        .split(r);
-
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Fill(1),
-            Constraint::Percentage(percent_x),
-            Constraint::Fill(1),
-        ])
-        .split(popup_layout[1])[1]
 }
 
 #[cfg(test)]
