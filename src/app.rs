@@ -363,6 +363,19 @@ impl App {
         cmd.args(&files);
 
         info!("Running svn commit for {} file(s)", files.len());
+
+        // print the full command with arguments (except password) for debugging purposes
+        let debug_cmd = cmd
+            .get_args()
+            .map(|arg| {
+                if arg == "--password" {
+                    "--password <redacted>".into()
+                } else {
+                    arg.to_owned()
+                }
+            })
+            .collect::<Vec<_>>();
+        debug!("svn commit command: {:?}", debug_cmd);
         match cmd.output() {
             Ok(output) => {
                 if output.status.success() {
