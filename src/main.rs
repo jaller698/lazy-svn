@@ -3,7 +3,7 @@ mod types;
 mod ui;
 
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -16,7 +16,7 @@ use simplelog::{CombinedLogger, Config, WriteLogger};
 use std::{error::Error, fs, io, path::PathBuf};
 
 use app::App;
-use types::ActiveWindow;
+use types::{ActiveWindow, CommitField};
 use ui::ui;
 
 fn init_logger() -> Result<(), Box<dyn Error>> {
@@ -79,24 +79,66 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
         terminal.draw(|f| ui(f, app));
         if let Event::Key(key) = event::read()? {
             if key.kind == KeyEventKind::Press {
-                // When the commit popup is open, all keystrokes go to the message buffer.
+                // When the commit popup is open, all keystrokes go to the active field.
                 if app.active_window == ActiveWindow::Commit {
                     match key.code {
                         KeyCode::Esc => {
                             app.active_window = ActiveWindow::ChangedFiles;
                             app.commit_message.clear();
+                            app.commit_username.clear();
+                            app.commit_password.clear();
+                            app.commit_active_field = CommitField::Message;
                             log::debug!("Commit cancelled");
                         }
-                        KeyCode::Enter => {
-                            log::info!("User confirmed commit");
+                        // Ctrl+Enter submits from any field.
+                        KeyCode::Enter
+                            if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                        {
+                            log::info!("User confirmed commit (Ctrl+Enter)");
                             app.do_commit();
                         }
-                        KeyCode::Backspace => {
-                            app.commit_message.pop();
+                        // Plain Enter: newline in the message field, advance focus in other fields.
+                        KeyCode::Enter => match app.commit_active_field {
+                            CommitField::Message => app.commit_message.push('\n'),
+                            CommitField::Username => {
+                                app.commit_active_field = CommitField::Password;
+                            }
+                            CommitField::Password => {
+                                log::info!("User confirmed commit (Enter on password)");
+                                app.do_commit();
+                            }
+                        },
+                        // Tab / BackTab cycle through the three fields.
+                        KeyCode::Tab => {
+                            app.commit_active_field = match app.commit_active_field {
+                                CommitField::Message => CommitField::Username,
+                                CommitField::Username => CommitField::Password,
+                                CommitField::Password => CommitField::Message,
+                            };
                         }
-                        KeyCode::Char(c) => {
-                            app.commit_message.push(c);
+                        KeyCode::BackTab => {
+                            app.commit_active_field = match app.commit_active_field {
+                                CommitField::Message => CommitField::Password,
+                                CommitField::Username => CommitField::Message,
+                                CommitField::Password => CommitField::Username,
+                            };
                         }
+                        KeyCode::Backspace => match app.commit_active_field {
+                            CommitField::Message => {
+                                app.commit_message.pop();
+                            }
+                            CommitField::Username => {
+                                app.commit_username.pop();
+                            }
+                            CommitField::Password => {
+                                app.commit_password.pop();
+                            }
+                        },
+                        KeyCode::Char(c) => match app.commit_active_field {
+                            CommitField::Message => app.commit_message.push(c),
+                            CommitField::Username => app.commit_username.push(c),
+                            CommitField::Password => app.commit_password.push(c),
+                        },
                         _ => {}
                     }
                     continue;

@@ -2,11 +2,12 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 
 use crate::app::App;
-use crate::types::{ActiveWindow, FileTreeNode};
+use crate::types::{ActiveWindow, CommitField, FileTreeNode};
 
 /// Returns a centred rectangle of the given percentage size inside `r`.
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
@@ -215,7 +216,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
     // Commit popup overlay
     if app.active_window == ActiveWindow::Commit {
-        let area = centered_rect(60, 30, f.area());
+        let area = centered_rect(65, 55, f.area());
         f.render_widget(Clear, area);
 
         let selected_count = app.selected_files.len();
@@ -225,26 +226,95 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             format!("Committing {} selected file(s)", selected_count)
         };
 
-        let message_hint = if app.commit_message.trim().is_empty() {
-            "  (message required)"
-        } else {
-            ""
+        // Styles for active vs inactive field labels.
+        let active_label = Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD);
+        let inactive_label = Style::default().fg(Color::DarkGray);
+        let value_style = Style::default().fg(Color::White);
+        let hint_style = Style::default().fg(Color::DarkGray);
+        let warn_style = Style::default().fg(Color::Red);
+
+        // Helper: cursor suffix shown only when a field is active.
+        let cur = |field: &CommitField| -> &str {
+            if *field == app.commit_active_field { "_" } else { "" }
         };
 
-        // Display the message with a trailing cursor.
-        let display_text = format!(
-            "{}\n\nMessage: {}_{}\n\n[Enter] commit  [Esc] cancel",
-            scope_hint, app.commit_message, message_hint
-        );
+        // ── Message field ───────────────────────────────────────────────
+        let msg_label_style = if app.commit_active_field == CommitField::Message {
+            active_label
+        } else {
+            inactive_label
+        };
+        let mut msg_lines: Vec<Line> = vec![
+            Line::from(Span::styled("Message:", msg_label_style)),
+        ];
+        if app.commit_message.trim().is_empty() {
+            msg_lines.push(Line::from(vec![
+                Span::styled(cur(&CommitField::Message), value_style),
+                Span::styled("  (required)", warn_style),
+            ]));
+        } else {
+            // Render each line of the multi-line message; append cursor on the last.
+            let raw_lines: Vec<&str> = app.commit_message.split('\n').collect();
+            for (i, raw) in raw_lines.iter().enumerate() {
+                let is_last = i + 1 == raw_lines.len();
+                let mut spans = vec![Span::styled(*raw, value_style)];
+                if is_last {
+                    spans.push(Span::styled(cur(&CommitField::Message), value_style));
+                }
+                msg_lines.push(Line::from(spans));
+            }
+        }
 
-        let popup = Paragraph::new(display_text)
+        // ── Username field ──────────────────────────────────────────────
+        let user_label_style = if app.commit_active_field == CommitField::Username {
+            active_label
+        } else {
+            inactive_label
+        };
+        let user_line = Line::from(vec![
+            Span::styled("Username (optional): ", user_label_style),
+            Span::styled(app.commit_username.clone(), value_style),
+            Span::styled(cur(&CommitField::Username), value_style),
+        ]);
+
+        // ── Password field ──────────────────────────────────────────────
+        let pass_label_style = if app.commit_active_field == CommitField::Password {
+            active_label
+        } else {
+            inactive_label
+        };
+        let masked = "*".repeat(app.commit_password.len());
+        let pass_line = Line::from(vec![
+            Span::styled("Password (optional): ", pass_label_style),
+            Span::styled(masked, value_style),
+            Span::styled(cur(&CommitField::Password), value_style),
+        ]);
+
+        // ── Assemble all lines ──────────────────────────────────────────
+        let mut popup_lines: Vec<Line> = vec![
+            Line::from(Span::styled(scope_hint, Style::default().fg(Color::Cyan))),
+            Line::from(""),
+        ];
+        popup_lines.extend(msg_lines);
+        popup_lines.push(Line::from(""));
+        popup_lines.push(user_line);
+        popup_lines.push(pass_line);
+        popup_lines.push(Line::from(""));
+        popup_lines.push(Line::from(Span::styled(
+            "[Ctrl+Enter] commit  [Tab] next field  [Esc] cancel",
+            hint_style,
+        )));
+
+        let popup = Paragraph::new(popup_lines)
             .block(
                 Block::default()
                     .title(" Commit ")
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::Yellow)),
             )
-            .style(Style::default().fg(Color::White));
+            .wrap(Wrap { trim: false });
 
         f.render_widget(popup, area);
     }

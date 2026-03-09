@@ -6,7 +6,7 @@ use ratatui::{
 use std::collections::{BTreeSet, HashSet};
 use std::process::Command;
 
-use crate::types::{ActiveWindow, FileTreeNode, SvnFile, SvnRevision};
+use crate::types::{ActiveWindow, CommitField, FileTreeNode, SvnFile, SvnRevision};
 use log::{debug, error, info, warn};
 
 pub struct App {
@@ -29,6 +29,17 @@ pub struct App {
     pub repository_url: Option<String>,
     /// Commit message being composed in the commit popup.
     pub commit_message: String,
+    /// Optional SVN username for the commit.
+    pub commit_username: String,
+    /// Optional SVN password for the commit.
+    /// The password is stored as a plain `String` and is cleared immediately after
+    /// the commit completes or is cancelled. It is never written to disk by this
+    /// application, but may briefly be visible in process argument lists when passed
+    /// to `svn` via `--password`. Users who require stronger security should rely on
+    /// SVN's own credential caching (~/.subversion/auth) instead.
+    pub commit_password: String,
+    /// Which field is currently active in the commit popup.
+    pub commit_active_field: CommitField,
 }
 
 impl App {
@@ -49,6 +60,9 @@ impl App {
             working_copy_revision: None,
             repository_url: None,
             commit_message: String::new(),
+            commit_username: String::new(),
+            commit_password: String::new(),
+            commit_active_field: CommitField::Message,
         };
         app.refresh_status();
         app.refresh_branches();
@@ -278,7 +292,14 @@ impl App {
         }
 
         let mut cmd = Command::new("svn");
-        cmd.arg("commit").arg("-m").arg(&message).args(&files);
+        cmd.arg("commit").arg("-m").arg(&message);
+        if !self.commit_username.is_empty() {
+            cmd.arg("--username").arg(&self.commit_username);
+        }
+        if !self.commit_password.is_empty() {
+            cmd.arg("--password").arg(&self.commit_password);
+        }
+        cmd.args(&files);
 
         info!("Running svn commit for {} file(s)", files.len());
         match cmd.output() {
@@ -295,6 +316,9 @@ impl App {
 
         self.selected_files.clear();
         self.commit_message.clear();
+        self.commit_username.clear();
+        self.commit_password.clear();
+        self.commit_active_field = CommitField::Message;
         self.active_window = ActiveWindow::ChangedFiles;
         self.refresh_status();
         true
