@@ -143,6 +143,11 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                             app.update_to_revision();
                         }
                     }
+                    KeyCode::Char(' ') => {
+                        if app.active_window == ActiveWindow::ChangedFiles {
+                            app.toggle_folder();
+                        }
+                    }
                     _ => {}
                 }
             }
