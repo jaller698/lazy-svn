@@ -9,7 +9,7 @@ local function binary_path()
   if not source or source:sub(1, 1) ~= "@" then
     return nil
   end
-  local plugin_dir = vim.fn.fnamemodify(source:sub(2), ":h")
+  local plugin_dir = vim.fn.fnamemodify(source:sub(2), ":h:h:h")
   return plugin_dir .. "/target/release/lazySVN"
 end
 
