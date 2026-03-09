@@ -11,6 +11,8 @@ pub struct App {
     pub active_window: ActiveWindow,
     pub file_list: Vec<SvnFile>,
     pub file_list_state: ListState,
+    pub branch_list: Vec<String>,
+    pub branch_list_state: ListState,
     pub current_diff: Vec<Line<'static>>,
     pub diff_scroll: u16,
     pub revision_list: Vec<SvnRevision>,
@@ -25,6 +27,8 @@ impl App {
             active_window: ActiveWindow::ChangedFiles,
             file_list: Vec::new(),
             file_list_state: ListState::default(),
+            branch_list: Vec::new(),
+            branch_list_state: ListState::default(),
             current_diff: vec![String::from("Select a file to see diff").into()],
             diff_scroll: 0,
             revision_list: Vec::new(),
@@ -33,6 +37,7 @@ impl App {
             repository_url: None,
         };
         app.refresh_status();
+        app.refresh_branches();
         app.refresh_log();
         app
     }
@@ -74,12 +79,13 @@ impl App {
             .unwrap_or_default();
 
         self.working_copy_revision = output.lines().find_map(|line| {
-            line.strip_prefix("Revision: ").map(|r| r.trim().to_string())
+            line.strip_prefix("Revision: ")
+                .map(|r| r.trim().to_string())
         });
 
-        self.repository_url = output.lines().find_map(|line| {
-            line.strip_prefix("URL: ").map(|u| u.trim().to_string())
-        });
+        self.repository_url = output
+            .lines()
+            .find_map(|line| line.strip_prefix("URL: ").map(|u| u.trim().to_string()));
     }
 
     pub fn refresh_log(&mut self) {
@@ -108,11 +114,7 @@ impl App {
                 if parts.len() >= 3 {
                     // Skip the blank line between header and message
                     lines.next();
-                    let message = lines
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                        .trim()
-                        .to_string();
+                    let message = lines.collect::<Vec<_>>().join(" ").trim().to_string();
                     Some(SvnRevision {
                         revision: parts[0].to_string(),
                         author: parts[1].to_string(),
@@ -144,8 +146,7 @@ impl App {
             if let Some(rev) = self.revision_list.get(i) {
                 let rev_num = Self::revision_number(&rev.revision);
                 if !rev_num.chars().all(|c| c.is_ascii_digit()) {
-                    self.current_diff =
-                        vec![Line::from("Invalid revision number".to_string())];
+                    self.current_diff = vec![Line::from("Invalid revision number".to_string())];
                     self.diff_scroll = 0;
                     return;
                 }
@@ -261,6 +262,87 @@ impl App {
                 }
             })
             .collect()
+    }
+
+    pub fn refresh_branches(&mut self) {
+        // Get the working copy URL and derive the branches URL by replacing /trunk with /branches
+        let wc_url = Command::new("svn")
+            .arg("info")
+            .arg("--show-item")
+            .arg("url")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+
+        let wc_url = match wc_url {
+            Some(url) if !url.is_empty() => url,
+            _ => {
+                self.branch_list = vec!["Error: could not determine working copy URL".to_string()];
+                self.branch_list_state = ListState::default();
+                return;
+            }
+        };
+
+        let branches_url = wc_url.replace("/trunk", "/branches");
+        let result = Command::new("svn").arg("list").arg(&branches_url).output();
+
+        let output = match result {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+            Ok(o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+                self.branch_list = vec![format!(
+                    "Error: {}",
+                    stderr.lines().next().unwrap_or("svn list failed")
+                )];
+                self.branch_list_state = ListState::default();
+                return;
+            }
+            Err(_) => {
+                self.branch_list = vec!["Error: failed to run svn".to_string()];
+                self.branch_list_state = ListState::default();
+                return;
+            }
+        };
+
+        self.branch_list = output
+            .lines()
+            // `svn list` appends a trailing slash to directory entries (branches are directories)
+            .map(|line| line.trim_end_matches('/').to_string())
+            .filter(|line| !line.is_empty())
+            .collect();
+
+        if !self.branch_list.is_empty() && self.branch_list_state.selected().is_none() {
+            self.branch_list_state.select(Some(0));
+        }
+    }
+
+    pub fn next_branch(&mut self) {
+        let i = match self.branch_list_state.selected() {
+            Some(i) => {
+                if i >= self.branch_list.len().saturating_sub(1) {
+                    0
+                } else {
+                    i + 1
+                }
+            }
+            None => 0,
+        };
+        self.branch_list_state.select(Some(i));
+    }
+
+    pub fn previous_branch(&mut self) {
+        let i = match self.branch_list_state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    self.branch_list.len().saturating_sub(1)
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.branch_list_state.select(Some(i));
     }
 
     pub fn next_file(&mut self) {
