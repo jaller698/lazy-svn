@@ -14,6 +14,8 @@ pub enum ActiveWindow {
     Diff,
     Commit,
     Help,
+    /// Shown when the user presses 'd'; waits for y/n confirmation.
+    ConfirmDelete,
 }
 
 pub struct SvnFile {
@@ -122,7 +124,11 @@ pub const KEYBINDINGS: &[Keybinding] = &[
     },
     Keybinding {
         key: "d",
-        description: "Delete marked files/folders via svn delete (Files panel only)",
+        description: "Delete marked files/folders via svn delete (Files panel only, asks for confirmation)",
+    },
+    Keybinding {
+        key: "u",
+        description: "Undo last delete — restore files from backup (Files panel only, one level)",
     },
     Keybinding {
         key: "c",

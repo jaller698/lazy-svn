@@ -147,6 +147,23 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                     continue;
                 }
 
+                // When the confirm-delete popup is open, only y/n/Esc are active.
+                if app.active_window == ActiveWindow::ConfirmDelete {
+                    match key.code {
+                        KeyCode::Char('y') => {
+                            log::info!("User confirmed delete");
+                            app.confirm_delete();
+                        }
+                        KeyCode::Char('n') | KeyCode::Esc => {
+                            log::debug!("Delete cancelled");
+                            app.delete_targets.clear();
+                            app.active_window = ActiveWindow::ChangedFiles;
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 // When the help window is focused only a few keys are active.
                 if app.active_window == ActiveWindow::Help {
                     match key.code {
@@ -191,6 +208,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                             ActiveWindow::Diff => ActiveWindow::ChangedFiles,
                             ActiveWindow::Commit => ActiveWindow::ChangedFiles,
                             ActiveWindow::Help => ActiveWindow::ChangedFiles,
+                            ActiveWindow::ConfirmDelete => ActiveWindow::ChangedFiles,
                         };
                         log::debug!("Switched active window to {:?}", app.active_window);
                     }
@@ -201,6 +219,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                         ActiveWindow::Diff => app.scroll_diff_down(),
                         ActiveWindow::Commit => {}
                         ActiveWindow::Help => {}
+                        ActiveWindow::ConfirmDelete => {}
                     },
                     KeyCode::Char('k') => match app.active_window {
                         ActiveWindow::ChangedFiles => app.previous_file(),
@@ -209,6 +228,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                         ActiveWindow::Diff => app.scroll_diff_up(),
                         ActiveWindow::Commit => {}
                         ActiveWindow::Help => {}
+                        ActiveWindow::ConfirmDelete => {}
                     },
                     KeyCode::Char('}') => {
                         if app.active_window == ActiveWindow::Diff {
@@ -253,11 +273,11 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                             log::debug!("Ran svn add on marked files");
                         }
                     }
-                    // 'd': run `svn delete` on marked files/folders.
+                    // 'd': prompt to confirm then run `svn delete` on marked files/folders.
                     KeyCode::Char('d') => {
                         if app.active_window == ActiveWindow::ChangedFiles {
                             app.svn_delete_marked();
-                            log::debug!("Ran svn delete on marked files");
+                            log::debug!("Opened delete confirmation for marked files");
                         }
                     }
                     // 'c': open commit popup from the ChangedFiles panel.
@@ -266,6 +286,13 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                             app.commit_message.clear();
                             app.active_window = ActiveWindow::Commit;
                             log::debug!("Opened commit window");
+                        }
+                    }
+                    // 'u': undo the last delete (restore from backup).
+                    KeyCode::Char('u') => {
+                        if app.active_window == ActiveWindow::ChangedFiles {
+                            app.undo_last_delete();
+                            log::debug!("Undid last delete");
                         }
                     }
                     _ => {}

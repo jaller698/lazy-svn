@@ -4,7 +4,11 @@ use ratatui::{
     widgets::ListState,
 };
 use std::collections::{BTreeSet, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use crate::types::{ActiveWindow, CommitField, FileTreeNode, SvnFile, SvnRevision};
 use log::{debug, error, info, warn};
@@ -43,6 +47,11 @@ pub struct App {
     pub commit_password: String,
     /// Which field is currently active in the commit popup.
     pub commit_active_field: CommitField,
+    /// Targets pending y/n confirmation before `svn delete` runs.
+    pub delete_targets: Vec<String>,
+    /// Backup created before the last `svn delete`.
+    /// Tuple of (backup_dir, original_paths); cleared after undo.
+    pub last_backup: Option<(PathBuf, Vec<String>)>,
 }
 
 impl App {
@@ -67,6 +76,8 @@ impl App {
             commit_username: String::new(),
             commit_password: String::new(),
             commit_active_field: CommitField::Message,
+            delete_targets: Vec::new(),
+            last_backup: None,
         };
         app.refresh_status();
         app.refresh_branches();
@@ -114,6 +125,8 @@ impl App {
             commit_username: String::new(),
             commit_password: String::new(),
             commit_active_field: CommitField::Message,
+            delete_targets: Vec::new(),
+            last_backup: None,
         }
     }
 
@@ -305,7 +318,7 @@ impl App {
 
     /// Run `svn delete` on the marked files/folders.
     /// If no files are marked, operates on the currently selected item.
-    /// Refreshes the status afterwards.
+    /// Transitions to the ConfirmDelete window so the user can confirm.
     pub fn svn_delete_marked(&mut self) {
         let targets: Vec<String> = if self.selected_files.is_empty() {
             // Fall back to whatever item is currently highlighted.
@@ -336,6 +349,54 @@ impl App {
             return;
         }
 
+        self.delete_targets = targets;
+        self.active_window = ActiveWindow::ConfirmDelete;
+    }
+
+    /// Called when the user confirms the delete prompt (presses 'y').
+    /// Backs up the targets to `/tmp/lazy-svn/<timestamp>/` then runs
+    /// `svn delete --force`, and stores the backup location for undo.
+    pub fn confirm_delete(&mut self) {
+        let targets: Vec<String> = std::mem::take(&mut self.delete_targets);
+        if targets.is_empty() {
+            self.active_window = ActiveWindow::ChangedFiles;
+            return;
+        }
+
+        // Create a timestamped backup directory (owner-only permissions on Unix).
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let backup_dir = PathBuf::from(format!("/tmp/lazy-svn/{}", timestamp));
+        if let Err(e) = fs::create_dir_all(&backup_dir) {
+            error!("Failed to create backup root {:?}: {}", backup_dir, e);
+        }
+        #[cfg(unix)]
+        {
+            let perms = fs::Permissions::from_mode(0o700);
+            if let Err(e) = fs::set_permissions(&backup_dir, perms) {
+                error!("Failed to set permissions on backup dir: {}", e);
+            }
+        }
+
+        // Copy each target file into the backup directory, preserving relative paths.
+        // SVN status paths are always relative (e.g. "src/main.rs"); trim_start_matches('/')
+        // is a no-op for them but keeps the join safe for absolute paths.
+        for target in &targets {
+            let backup_path = backup_dir.join(target.trim_start_matches('/'));
+            if let Some(parent) = backup_path.parent() {
+                if let Err(e) = fs::create_dir_all(parent) {
+                    error!("Failed to create backup dir {:?}: {}", parent, e);
+                }
+            }
+            if Path::new(target).is_file() {
+                if let Err(e) = fs::copy(target, &backup_path) {
+                    error!("Failed to backup {}: {}", target, e);
+                }
+            }
+        }
+
         info!("Running svn delete for {} item(s)", targets.len());
         debug!("svn delete targets: {:?}", targets);
         let mut cmd = Command::new("svn");
@@ -351,7 +412,54 @@ impl App {
             Err(e) => error!("Failed to run svn delete: {e}"),
         }
 
+        self.last_backup = Some((backup_dir, targets));
         self.selected_files.clear();
+        self.active_window = ActiveWindow::ChangedFiles;
+        self.refresh_status();
+    }
+
+    /// Undo the last delete by restoring files from the backup directory.
+    /// Only one level of undo is supported; calling this a second time without
+    /// an intervening delete does nothing.
+    pub fn undo_last_delete(&mut self) {
+        let Some((backup_dir, paths)) = self.last_backup.take() else {
+            debug!("undo_last_delete: nothing to undo");
+            return;
+        };
+
+        info!("Undoing last delete ({} item(s))", paths.len());
+        for original_path in &paths {
+            let backup_path = backup_dir.join(original_path.trim_start_matches('/'));
+            if backup_path.exists() {
+                // Recreate parent directory if needed.
+                if let Some(parent) = Path::new(original_path).parent() {
+                    if !parent.as_os_str().is_empty() {
+                        if let Err(e) = fs::create_dir_all(parent) {
+                            error!("Failed to recreate dir {:?}: {}", parent, e);
+                        }
+                    }
+                }
+                if let Err(e) = fs::copy(&backup_path, original_path) {
+                    error!("Failed to restore {}: {}", original_path, e);
+                }
+            } else {
+                warn!(
+                    "undo_last_delete: backup missing for '{}' (expected at {:?}), skipping",
+                    original_path, backup_path
+                );
+            }
+        }
+
+        // Revert SVN state for any previously-versioned files.
+        let mut cmd = Command::new("svn");
+        cmd.arg("revert")
+            .arg("--depth")
+            .arg("infinity")
+            .args(&paths);
+        if let Err(e) = cmd.output() {
+            error!("Failed to run svn revert during undo: {e}");
+        }
+
         self.refresh_status();
     }
 
