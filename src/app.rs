@@ -170,6 +170,62 @@ impl App {
         }
     }
 
+    pub fn next_revision(&mut self) {
+        let len = self.revision_list.len();
+        if len == 0 {
+            return;
+        }
+        let i = match self.revision_list_state.selected() {
+            Some(i) => {
+                if i >= len - 1 {
+                    0
+                } else {
+                    i + 1
+                }
+            }
+            None => 0,
+        };
+        self.revision_list_state.select(Some(i));
+        self.refresh_revision_diff();
+    }
+
+    pub fn previous_revision(&mut self) {
+        let len = self.revision_list.len();
+        if len == 0 {
+            return;
+        }
+        let i = match self.revision_list_state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    len - 1
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.revision_list_state.select(Some(i));
+        self.refresh_revision_diff();
+    }
+
+    pub fn update_to_revision(&mut self) {
+        if let Some(i) = self.revision_list_state.selected() {
+            if let Some(rev) = self.revision_list.get(i) {
+                let rev_num = Self::revision_number(&rev.revision);
+                if !rev_num.chars().all(|c| c.is_ascii_digit()) {
+                    return;
+                }
+                Command::new("svn")
+                    .arg("update")
+                    .arg("-r")
+                    .arg(rev_num)
+                    .output()
+                    .ok();
+                self.refresh_status();
+            }
+        }
+    }
+
     pub fn refresh_diff(&mut self) {
         if let Some(i) = self.file_list_state.selected() {
             if let Some(file) = self.file_list.get(i) {
