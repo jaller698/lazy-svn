@@ -14,6 +14,8 @@ pub enum ActiveWindow {
     Diff,
     Commit,
     Help,
+    /// Shown when the user presses 'd'; waits for y/n confirmation.
+    ConfirmDelete,
 }
 
 pub struct SvnFile {
@@ -106,7 +108,7 @@ pub const KEYBINDINGS: &[Keybinding] = &[
     },
     Keybinding {
         key: "r",
-        description: "Refresh all data",
+        description: "Revert marked files (Files panel) / Refresh all data (other panels)",
     },
     Keybinding {
         key: "Enter",
@@ -114,6 +116,22 @@ pub const KEYBINDINGS: &[Keybinding] = &[
     },
     Keybinding {
         key: "Space",
-        description: "Toggle folder (Files panel only)",
+        description: "Select file / select all children of a folder (Files panel only)",
+    },
+    Keybinding {
+        key: "a",
+        description: "Add marked unversioned files (Files panel only)",
+    },
+    Keybinding {
+        key: "d",
+        description: "Delete marked files/folders via svn delete (Files panel only, asks for confirmation)",
+    },
+    Keybinding {
+        key: "u",
+        description: "Undo last delete — restore files from backup (Files panel only, one level)",
+    },
+    Keybinding {
+        key: "c",
+        description: "Open commit popup (Files panel only)",
     },
 ];

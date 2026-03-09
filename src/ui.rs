@@ -90,6 +90,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
     let border_color = if app.active_window == ActiveWindow::ChangedFiles
         || app.active_window == ActiveWindow::Commit
+        || app.active_window == ActiveWindow::ConfirmDelete
     {
         Color::Yellow
     } else {
@@ -98,7 +99,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let list = List::new(items)
         .block(
             Block::default()
-                .title(" 1: Files (j/k | Space: select | Enter: fold | a: commit) ")
+                .title(" 1: Files (j/k | Space: select | Enter: fold | a: add | d: delete | r: revert | u: undo | c: commit) ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color)),
         )
@@ -320,6 +321,51 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                     .title(" Commit ")
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::Yellow)),
+            )
+            .wrap(Wrap { trim: false });
+
+        f.render_widget(popup, area);
+    }
+    // Confirm-delete popup overlay
+    if app.active_window == ActiveWindow::ConfirmDelete {
+        let area = centered_rect(55, 40, f.area());
+        f.render_widget(Clear, area);
+
+        let hint_style = Style::default().fg(Color::DarkGray);
+        let warn_style = Style::default().fg(Color::Red);
+        let path_style = Style::default().fg(Color::White);
+
+        let mut lines: Vec<Line> = vec![
+            Line::from(Span::styled(
+                format!(
+                    "About to delete {} item(s):",
+                    app.delete_targets.len()
+                ),
+                warn_style,
+            )),
+            Line::from(""),
+        ];
+        for path in app.delete_targets.iter().take(8) {
+            lines.push(Line::from(Span::styled(format!("  {}", path), path_style)));
+        }
+        if app.delete_targets.len() > 8 {
+            lines.push(Line::from(Span::styled(
+                format!("  … and {} more", app.delete_targets.len() - 8),
+                hint_style,
+            )));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "[y] confirm  [n / Esc] cancel",
+            hint_style,
+        )));
+
+        let popup = Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .title(" Confirm Delete ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Red)),
             )
             .wrap(Wrap { trim: false });
 

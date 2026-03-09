@@ -4,7 +4,11 @@ use ratatui::{
     widgets::ListState,
 };
 use std::collections::{BTreeSet, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use crate::types::{ActiveWindow, CommitField, FileTreeNode, SvnFile, SvnRevision};
 use log::{debug, error, info, warn};
@@ -43,6 +47,11 @@ pub struct App {
     pub commit_password: String,
     /// Which field is currently active in the commit popup.
     pub commit_active_field: CommitField,
+    /// Targets pending y/n confirmation before `svn delete` runs.
+    pub delete_targets: Vec<String>,
+    /// Backup created before the last `svn delete`.
+    /// Tuple of (backup_dir, original_paths); cleared after undo.
+    pub last_backup: Option<(PathBuf, Vec<String>)>,
 }
 
 impl App {
@@ -67,6 +76,8 @@ impl App {
             commit_username: String::new(),
             commit_password: String::new(),
             commit_active_field: CommitField::Message,
+            delete_targets: Vec::new(),
+            last_backup: None,
         };
         app.refresh_status();
         app.refresh_branches();
@@ -101,6 +112,7 @@ impl App {
             file_list_state: ListState::default(),
             visible_items: Vec::new(),
             collapsed_dirs: HashSet::new(),
+            selected_files: HashSet::new(),
             branch_list: Vec::new(),
             branch_list_state: ListState::default(),
             current_diff: vec![String::from("Select a file to see diff").into()],
@@ -109,6 +121,12 @@ impl App {
             revision_list_state: ListState::default(),
             working_copy_revision: None,
             repository_url: None,
+            commit_message: String::new(),
+            commit_username: String::new(),
+            commit_password: String::new(),
+            commit_active_field: CommitField::Message,
+            delete_targets: Vec::new(),
+            last_backup: None,
         }
     }
 
@@ -252,19 +270,293 @@ impl App {
         }
     }
 
-    /// Toggle whether the currently selected file is marked for the next commit.
-    /// Has no effect when the selected item is a directory.
+    /// Toggle whether the currently selected item is marked.
+    /// - For a **file**: toggle that single file.
+    /// - For a **directory**: toggle all files under that directory prefix.
+    ///   If all children are already selected, they are deselected; otherwise all are selected.
     pub fn toggle_file_selection(&mut self) {
         if let Some(i) = self.file_list_state.selected() {
-            if let Some(FileTreeNode::File { path, .. }) = self.visible_items.get(i) {
-                let path = path.clone();
-                if self.selected_files.contains(&path) {
-                    self.selected_files.remove(&path);
-                } else {
-                    self.selected_files.insert(path);
+            match self.visible_items.get(i).cloned() {
+                Some(FileTreeNode::File { path, .. }) => {
+                    if self.selected_files.contains(&path) {
+                        self.selected_files.remove(&path);
+                    } else {
+                        self.selected_files.insert(path);
+                    }
+                }
+                Some(FileTreeNode::Dir { path: dir_path, .. }) => {
+                    // `dir_path` always ends with `/` (e.g. `"src/"`), so
+                    // `starts_with` only matches real children and not paths
+                    // that merely share a common prefix (e.g. `"srcbar/..."`).
+                    let children: Vec<String> = self
+                        .file_list
+                        .iter()
+                        .filter(|f| f.path.starts_with(dir_path.as_str()))
+                        .map(|f| f.path.clone())
+                        .collect();
+
+                    if children.is_empty() {
+                        return;
+                    }
+
+                    let all_selected = children.iter().all(|p| self.selected_files.contains(p));
+
+                    if all_selected {
+                        for p in &children {
+                            self.selected_files.remove(p);
+                        }
+                    } else {
+                        for p in children {
+                            self.selected_files.insert(p);
+                        }
+                    }
+                }
+                None => {}
+            }
+        }
+    }
+
+    /// Run `svn delete` on the marked files/folders.
+    /// If no files are marked, operates on the currently selected item.
+    /// Transitions to the ConfirmDelete window so the user can confirm.
+    pub fn svn_delete_marked(&mut self) {
+        let targets: Vec<String> = if self.selected_files.is_empty() {
+            // Fall back to whatever item is currently highlighted.
+            if let Some(i) = self.file_list_state.selected() {
+                match self.visible_items.get(i) {
+                    Some(FileTreeNode::File { path, .. }) => vec![path.clone()],
+                    Some(FileTreeNode::Dir { path, .. }) => {
+                        // `path` always ends with `/` so `starts_with` is an
+                        // exact directory-boundary match (won't match sibling
+                        // dirs sharing a common prefix).
+                        self.file_list
+                            .iter()
+                            .filter(|f| f.path.starts_with(path.as_str()))
+                            .map(|f| f.path.clone())
+                            .collect()
+                    }
+                    None => vec![],
+                }
+            } else {
+                vec![]
+            }
+        } else {
+            self.selected_files.iter().cloned().collect()
+        };
+
+        if targets.is_empty() {
+            debug!("svn_delete_marked: nothing to delete");
+            return;
+        }
+
+        self.delete_targets = targets;
+        self.active_window = ActiveWindow::ConfirmDelete;
+    }
+
+    /// Called when the user confirms the delete prompt (presses 'y').
+    /// Backs up the targets to `/tmp/lazy-svn/<timestamp>/` then runs
+    /// `svn delete --force`, and stores the backup location for undo.
+    pub fn confirm_delete(&mut self) {
+        let targets: Vec<String> = std::mem::take(&mut self.delete_targets);
+        if targets.is_empty() {
+            self.active_window = ActiveWindow::ChangedFiles;
+            return;
+        }
+
+        // Create a timestamped backup directory (owner-only permissions on Unix).
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let backup_dir = PathBuf::from(format!("/tmp/lazy-svn/{}", timestamp));
+        if let Err(e) = fs::create_dir_all(&backup_dir) {
+            error!("Failed to create backup root {:?}: {}", backup_dir, e);
+        }
+        #[cfg(unix)]
+        {
+            let perms = fs::Permissions::from_mode(0o700);
+            if let Err(e) = fs::set_permissions(&backup_dir, perms) {
+                error!("Failed to set permissions on backup dir: {}", e);
+            }
+        }
+
+        // Copy each target file into the backup directory, preserving relative paths.
+        // SVN status paths are always relative (e.g. "src/main.rs"); trim_start_matches('/')
+        // is a no-op for them but keeps the join safe for absolute paths.
+        for target in &targets {
+            let backup_path = backup_dir.join(target.trim_start_matches('/'));
+            if let Some(parent) = backup_path.parent() {
+                if let Err(e) = fs::create_dir_all(parent) {
+                    error!("Failed to create backup dir {:?}: {}", parent, e);
+                }
+            }
+            if Path::new(target).is_file() {
+                if let Err(e) = fs::copy(target, &backup_path) {
+                    error!("Failed to backup {}: {}", target, e);
                 }
             }
         }
+
+        info!("Running svn delete for {} item(s)", targets.len());
+        debug!("svn delete targets: {:?}", targets);
+        let mut cmd = Command::new("svn");
+        cmd.arg("delete").arg("--force").args(&targets);
+        debug!("Running command: {:?}", cmd);
+        match cmd.output() {
+            Ok(output) => {
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    error!("svn delete failed: {stderr}");
+                }
+            }
+            Err(e) => error!("Failed to run svn delete: {e}"),
+        }
+
+        self.last_backup = Some((backup_dir, targets));
+        self.selected_files.clear();
+        self.active_window = ActiveWindow::ChangedFiles;
+        self.refresh_status();
+    }
+
+    /// Undo the last delete by restoring files from the backup directory.
+    /// Only one level of undo is supported; calling this a second time without
+    /// an intervening delete does nothing.
+    pub fn undo_last_delete(&mut self) {
+        let Some((backup_dir, paths)) = self.last_backup.take() else {
+            debug!("undo_last_delete: nothing to undo");
+            return;
+        };
+
+        info!("Undoing last delete ({} item(s))", paths.len());
+        for original_path in &paths {
+            let backup_path = backup_dir.join(original_path.trim_start_matches('/'));
+            if backup_path.exists() {
+                // Recreate parent directory if needed.
+                if let Some(parent) = Path::new(original_path).parent() {
+                    if !parent.as_os_str().is_empty() {
+                        if let Err(e) = fs::create_dir_all(parent) {
+                            error!("Failed to recreate dir {:?}: {}", parent, e);
+                        }
+                    }
+                }
+                if let Err(e) = fs::copy(&backup_path, original_path) {
+                    error!("Failed to restore {}: {}", original_path, e);
+                }
+            } else {
+                warn!(
+                    "undo_last_delete: backup missing for '{}' (expected at {:?}), skipping",
+                    original_path, backup_path
+                );
+            }
+        }
+
+        // Revert SVN state for any previously-versioned files.
+        let mut cmd = Command::new("svn");
+        cmd.arg("revert")
+            .arg("--depth")
+            .arg("infinity")
+            .args(&paths);
+        if let Err(e) = cmd.output() {
+            error!("Failed to run svn revert during undo: {e}");
+        }
+
+        self.refresh_status();
+    }
+
+    /// Run `svn revert` on the marked files/folders.
+    /// If no files are marked, operates on the currently selected item.
+    /// Refreshes the status afterwards.
+    pub fn svn_revert_marked(&mut self) {
+        let targets: Vec<String> = if self.selected_files.is_empty() {
+            if let Some(i) = self.file_list_state.selected() {
+                match self.visible_items.get(i) {
+                    Some(FileTreeNode::File { path, .. }) => vec![path.clone()],
+                    Some(FileTreeNode::Dir { path, .. }) => {
+                        // `path` always ends with `/` so `starts_with` is an
+                        // exact directory-boundary match.
+                        self.file_list
+                            .iter()
+                            .filter(|f| f.path.starts_with(path.as_str()))
+                            .map(|f| f.path.clone())
+                            .collect()
+                    }
+                    None => vec![],
+                }
+            } else {
+                vec![]
+            }
+        } else {
+            self.selected_files.iter().cloned().collect()
+        };
+
+        if targets.is_empty() {
+            debug!("svn_revert_marked: nothing to revert");
+            return;
+        }
+
+        info!("Running svn revert for {} item(s)", targets.len());
+        let mut cmd = Command::new("svn");
+        cmd.arg("revert")
+            .arg("--depth")
+            .arg("infinity")
+            .args(&targets);
+        match cmd.output() {
+            Ok(output) => {
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    error!("svn revert failed for {:?}: {stderr}", targets);
+                }
+            }
+            Err(e) => error!("Failed to run svn revert: {e}"),
+        }
+
+        self.selected_files.clear();
+        self.refresh_status();
+    }
+
+    /// Run `svn add` on the marked files that have unversioned (`?`) status.
+    /// If no files are marked, adds all unversioned files in the file list.
+    /// Refreshes the status afterwards.
+    pub fn svn_add_marked(&mut self) {
+        let status_map: std::collections::HashMap<&str, &str> = self
+            .file_list
+            .iter()
+            .map(|f| (f.path.as_str(), f.status.as_str()))
+            .collect();
+
+        let candidates: Vec<&str> = if self.selected_files.is_empty() {
+            self.file_list
+                .iter()
+                .filter(|f| f.status == "?")
+                .map(|f| f.path.as_str())
+                .collect()
+        } else {
+            self.selected_files
+                .iter()
+                .filter(|p| status_map.get(p.as_str()).map_or(false, |&s| s == "?"))
+                .map(|p| p.as_str())
+                .collect()
+        };
+
+        if candidates.is_empty() {
+            debug!("svn_add_marked: no unversioned files to add");
+            return;
+        }
+
+        info!("Running svn add for {} file(s)", candidates.len());
+        let mut cmd = Command::new("svn");
+        cmd.arg("add").args(&candidates);
+        match cmd.output() {
+            Ok(output) => {
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    error!("svn add failed: {stderr}");
+                }
+            }
+            Err(e) => error!("Failed to run svn add: {e}"),
+        }
+
+        self.refresh_status();
     }
 
     /// Run `svn commit` with the current `commit_message`.
