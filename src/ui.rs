@@ -46,7 +46,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let list = List::new(items)
         .block(
             Block::default()
-                .title(" Files (j/k) ")
+                .title(" 1: Files (j/k) ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color)),
         )
@@ -73,7 +73,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let branch_list = List::new(branch_items)
         .block(
             Block::default()
-                .title(" Branches (j/k) ")
+                .title(" 2: Branches (j/k) ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(branch_border_color)),
         )
@@ -137,7 +137,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let rev_list = List::new(rev_items)
         .block(
             Block::default()
-                .title(" Revisions (j/k: navigate | Enter: update) ")
+                .title(" 3: Revisions (j/k: navigate | Enter: update) ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(rev_border_color)),
         )
@@ -161,7 +161,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let diff_paragraph = Paragraph::new(app.current_diff.clone())
         .block(
             Block::default()
-                .title(" Diff View (j/k: scroll | {/}: hunk) ")
+                .title(" 4: Diff View (j/k: scroll | {/}: hunk) ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(diff_style)),
         )
