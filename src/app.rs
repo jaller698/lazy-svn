@@ -228,43 +228,57 @@ impl App {
             return false;
         }
 
-        // `file_list` is populated from `svn status`; the `?` status means the file
-        // is not under version control — SVN refuses to commit such paths (E200009).
+        // Build status map to identify unversioned (`?`) files.
+        let status_map: std::collections::HashMap<&str, &str> = self
+            .file_list
+            .iter()
+            .map(|f| (f.path.as_str(), f.status.as_str()))
+            .collect();
+
         let files: Vec<String> = if self.selected_files.is_empty() {
-            // Commit all versioned changed files; skip unversioned `?` entries.
-            self.file_list
-                .iter()
-                .filter(|f| f.status != "?")
-                .map(|f| f.path.clone())
-                .collect()
+            self.file_list.iter().map(|f| f.path.clone()).collect()
         } else {
-            // Commit only the selected files that are under version control.
-            let status_map: std::collections::HashMap<&str, &str> = self
-                .file_list
-                .iter()
-                .map(|f| (f.path.as_str(), f.status.as_str()))
-                .collect();
-            self.selected_files
-                .iter()
-                .filter(|p| {
-                    status_map
-                        .get(p.as_str())
-                        .map_or(false, |&s| s != "?")
-                })
-                .cloned()
-                .collect()
+            self.selected_files.iter().cloned().collect()
         };
 
         if files.is_empty() {
-            warn!("do_commit: no committable files (all files may be unversioned or filtered out)");
+            warn!("do_commit: no files to commit");
             return false;
         }
 
-        let mut cmd = Command::new("svn");
-        cmd.arg("commit").arg("-m").arg(&message);
-        for path in &files {
-            cmd.arg(path);
+        // Run `svn add` on any unversioned (`?`) files before committing so that
+        // SVN accepts them and doesn't return E200009.
+        let unversioned: Vec<&str> = files
+            .iter()
+            .filter(|p| {
+                status_map
+                    .get(p.as_str())
+                    .map_or(false, |&s| s == "?")
+            })
+            .map(|p| p.as_str())
+            .collect();
+
+        if !unversioned.is_empty() {
+            info!("Running svn add for {} unversioned file(s)", unversioned.len());
+            let mut add_cmd = Command::new("svn");
+            add_cmd.arg("add").args(&unversioned);
+            match add_cmd.output() {
+                Ok(output) => {
+                    if !output.status.success() {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        error!("svn add failed for {} file(s): {stderr}", unversioned.len());
+                        return false;
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to run svn add: {e}");
+                    return false;
+                }
+            }
         }
+
+        let mut cmd = Command::new("svn");
+        cmd.arg("commit").arg("-m").arg(&message).args(&files);
 
         info!("Running svn commit for {} file(s)", files.len());
         match cmd.output() {
