@@ -80,6 +80,10 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
         if let Event::Key(key) = event::read()? {
             if key.kind == KeyEventKind::Press {
                 match key.code {
+                    KeyCode::Char('?') => {
+                        app.show_help = !app.show_help;
+                        log::debug!("Toggled help window: {}", app.show_help);
+                    }
                     KeyCode::Char('q') => {
                         log::info!("User quit");
                         return Ok(());

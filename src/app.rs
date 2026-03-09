@@ -25,6 +25,7 @@ pub struct App {
     pub revision_list_state: ListState,
     pub working_copy_revision: Option<String>,
     pub repository_url: Option<String>,
+    pub show_help: bool,
 }
 
 impl App {
@@ -43,11 +44,31 @@ impl App {
             revision_list_state: ListState::default(),
             working_copy_revision: None,
             repository_url: None,
+            show_help: false,
         };
         app.refresh_status();
         app.refresh_branches();
         app.refresh_log();
         app
+    }
+
+    /// Construct a minimal `App` for use in tests without running any SVN commands.
+    #[cfg(test)]
+    pub fn test_new() -> App {
+        App {
+            active_window: ActiveWindow::ChangedFiles,
+            file_list: Vec::new(),
+            file_list_state: ListState::default(),
+            branch_list: Vec::new(),
+            branch_list_state: ListState::default(),
+            current_diff: vec![String::from("Select a file to see diff").into()],
+            diff_scroll: 0,
+            revision_list: Vec::new(),
+            revision_list_state: ListState::default(),
+            working_copy_revision: None,
+            repository_url: None,
+            show_help: false,
+        }
     }
 
     pub fn refresh_status(&mut self) {

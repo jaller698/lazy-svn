@@ -1,12 +1,13 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    text::{Line, Text},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
 
 use crate::app::App;
-use crate::types::{ActiveWindow, FileTreeNode};
+use crate::types::{ActiveWindow, FileTreeNode, KEYBINDINGS};
 
 pub fn ui(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
@@ -183,4 +184,88 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         .scroll((app.diff_scroll, 0));
 
     f.render_widget(diff_paragraph, chunks[1]);
+
+    if app.show_help {
+        let area = centered_rect(60, 60, f.area());
+        let lines: Vec<Line> = std::iter::once(Line::from(" Keybindings - press ? to close"))
+            .chain(std::iter::once(Line::from("")))
+            .chain(
+                KEYBINDINGS
+                    .iter()
+                    .map(|kb| Line::from(format!("  {:6}  {}", kb.key, kb.description))),
+            )
+            .collect();
+        let help_text = Text::from(lines);
+        let popup = Paragraph::new(help_text).block(
+            Block::default()
+                .title(" Help ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow)),
+        );
+        f.render_widget(Clear, area);
+        f.render_widget(popup, area);
+    }
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Fill(1),
+            Constraint::Percentage(percent_y),
+            Constraint::Fill(1),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Fill(1),
+            Constraint::Percentage(percent_x),
+            Constraint::Fill(1),
+        ])
+        .split(popup_layout[1])[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::App;
+    use crate::types::KEYBINDINGS;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    /// Render the UI with the help window open and collect every cell's symbol into
+    /// a single string.  We then verify that every key listed in `KEYBINDINGS` appears
+    /// somewhere in that rendered text.  Adding a new entry to `KEYBINDINGS` is
+    /// sufficient to make the test cover it automatically.
+    #[test]
+    fn test_help_window_shows_all_keybindings() {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::test_new();
+        app.show_help = true;
+
+        terminal.draw(|f| ui(f, &mut app)).unwrap();
+
+        let buffer = terminal.backend().buffer().clone();
+        // Join all cell symbols row-by-row so that multi-character keys like "Tab"
+        // or "Enter" are preserved as contiguous substrings.
+        let content: String = (0..buffer.area().height)
+            .map(|y| {
+                (0..buffer.area().width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        for kb in KEYBINDINGS {
+            assert!(
+                content.contains(kb.key),
+                "Help window is missing keybinding: '{}' (description: '{}')",
+                kb.key,
+                kb.description
+            );
+        }
+    }
 }

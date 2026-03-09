@@ -44,3 +44,46 @@ pub enum FileTreeNode {
         depth: usize,
     },
 }
+pub struct Keybinding {
+    pub key: &'static str,
+    pub description: &'static str,
+}
+
+pub const KEYBINDINGS: &[Keybinding] = &[
+    Keybinding {
+        key: "?",
+        description: "Show/hide this help window",
+    },
+    Keybinding {
+        key: "q",
+        description: "Quit",
+    },
+    Keybinding {
+        key: "Tab",
+        description: "Switch panel",
+    },
+    Keybinding {
+        key: "j",
+        description: "Move down / scroll diff down",
+    },
+    Keybinding {
+        key: "k",
+        description: "Move up / scroll diff up",
+    },
+    Keybinding {
+        key: "}",
+        description: "Jump to next hunk (Diff panel only)",
+    },
+    Keybinding {
+        key: "{",
+        description: "Jump to previous hunk (Diff panel only)",
+    },
+    Keybinding {
+        key: "r",
+        description: "Refresh all data",
+    },
+    Keybinding {
+        key: "Enter",
+        description: "Update to selected revision (Revisions panel only)",
+    },
+];
