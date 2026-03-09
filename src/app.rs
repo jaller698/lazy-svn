@@ -334,8 +334,15 @@ impl App {
                         error!("Failed to fetch revision diff for {rev_num}: {e}");
                         "Error fetching revision diff".into()
                     });
+                let revision_info = format!(
+                    "Revision {}: {} | {} | {}",
+                    rev.revision, rev.author, rev.date, rev.message
+                );
 
-                self.current_diff = Self::style_diff_output(&output);
+                self.current_diff = vec![Line::from(revision_info)]
+                    .into_iter()
+                    .chain(Self::style_diff_output(&output))
+                    .collect();
                 self.diff_scroll = 0;
             }
         }
