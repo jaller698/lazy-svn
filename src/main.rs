@@ -79,10 +79,22 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
         terminal.draw(|f| ui(f, app));
         if let Event::Key(key) = event::read()? {
             if key.kind == KeyEventKind::Press {
+                // When the help window is focused only a few keys are active.
+                if app.active_window == ActiveWindow::Help {
+                    match key.code {
+                        KeyCode::Char('?') => app.close_help(),
+                        KeyCode::Char('q') => {
+                            log::info!("User quit");
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 match key.code {
                     KeyCode::Char('?') => {
-                        app.show_help = !app.show_help;
-                        log::debug!("Toggled help window: {}", app.show_help);
+                        app.open_help();
                     }
                     KeyCode::Char('q') => {
                         log::info!("User quit");
@@ -110,6 +122,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                             ActiveWindow::Branches => ActiveWindow::Revisions,
                             ActiveWindow::Revisions => ActiveWindow::Diff,
                             ActiveWindow::Diff => ActiveWindow::ChangedFiles,
+                            ActiveWindow::Help => ActiveWindow::ChangedFiles,
                         };
                         log::debug!("Switched active window to {:?}", app.active_window);
                     }
@@ -118,12 +131,14 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                         ActiveWindow::Branches => app.next_branch(),
                         ActiveWindow::Revisions => app.next_revision(),
                         ActiveWindow::Diff => app.scroll_diff_down(),
+                        ActiveWindow::Help => {}
                     },
                     KeyCode::Char('k') => match app.active_window {
                         ActiveWindow::ChangedFiles => app.previous_file(),
                         ActiveWindow::Branches => app.previous_branch(),
                         ActiveWindow::Revisions => app.previous_revision(),
                         ActiveWindow::Diff => app.scroll_diff_up(),
+                        ActiveWindow::Help => {}
                     },
                     KeyCode::Char('}') => {
                         if app.active_window == ActiveWindow::Diff {

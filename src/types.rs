@@ -4,6 +4,7 @@ pub enum ActiveWindow {
     Branches,
     Revisions,
     Diff,
+    Help,
 }
 
 pub struct SvnFile {
@@ -60,7 +61,23 @@ pub const KEYBINDINGS: &[Keybinding] = &[
     },
     Keybinding {
         key: "Tab",
-        description: "Switch panel",
+        description: "Switch to next panel",
+    },
+    Keybinding {
+        key: "1",
+        description: "Switch to Files panel",
+    },
+    Keybinding {
+        key: "2",
+        description: "Switch to Branches panel",
+    },
+    Keybinding {
+        key: "3",
+        description: "Switch to Revisions panel",
+    },
+    Keybinding {
+        key: "4",
+        description: "Switch to Diff panel",
     },
     Keybinding {
         key: "j",
@@ -85,5 +102,9 @@ pub const KEYBINDINGS: &[Keybinding] = &[
     Keybinding {
         key: "Enter",
         description: "Update to selected revision (Revisions panel only)",
+    },
+    Keybinding {
+        key: "Space",
+        description: "Toggle folder (Files panel only)",
     },
 ];

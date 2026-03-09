@@ -185,7 +185,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
     f.render_widget(diff_paragraph, chunks[1]);
 
-    if app.show_help {
+    if app.active_window == ActiveWindow::Help {
         let area = centered_rect(60, 60, f.area());
         let lines: Vec<Line> = std::iter::once(Line::from(" Keybindings - press ? to close"))
             .chain(std::iter::once(Line::from("")))
@@ -243,7 +243,7 @@ mod tests {
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::test_new();
-        app.show_help = true;
+        app.open_help();
 
         terminal.draw(|f| ui(f, &mut app)).unwrap();
 
