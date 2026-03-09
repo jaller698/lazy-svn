@@ -6,7 +6,7 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::types::ActiveWindow;
+use crate::types::{ActiveWindow, FileTreeNode};
 
 pub fn ui(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
@@ -23,18 +23,37 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         ])
         .split(chunks[0]);
 
-    // Render File List
+    // Render File Tree
     let items: Vec<ListItem> = app
-        .file_list
+        .visible_items
         .iter()
-        .map(|file| {
-            let style = match file.status.as_str() {
-                "M" => Style::default().fg(Color::Blue),
-                "A" => Style::default().fg(Color::Green),
-                "D" => Style::default().fg(Color::Red),
-                _ => Style::default().fg(Color::White),
-            };
-            ListItem::new(format!(" {}  {}", file.status, file.path)).style(style)
+        .map(|node| match node {
+            FileTreeNode::Dir {
+                name,
+                depth,
+                collapsed,
+                ..
+            } => {
+                let indent = "  ".repeat(*depth);
+                let icon = if *collapsed { "▶" } else { "▼" };
+                ListItem::new(format!("{}{} {}/", indent, icon, name))
+                    .style(Style::default().fg(Color::LightBlue))
+            }
+            FileTreeNode::File {
+                status,
+                name,
+                depth,
+                ..
+            } => {
+                let indent = "  ".repeat(*depth);
+                let style = match status.as_str() {
+                    "M" => Style::default().fg(Color::Blue),
+                    "A" => Style::default().fg(Color::Green),
+                    "D" => Style::default().fg(Color::Red),
+                    _ => Style::default().fg(Color::White),
+                };
+                ListItem::new(format!("{}{} {}", indent, status, name)).style(style)
+            }
         })
         .collect();
 
@@ -46,7 +65,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let list = List::new(items)
         .block(
             Block::default()
-                .title(" 1: Files (j/k) ")
+                .title(" 1: Files (j/k | Space: fold) ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color)),
         )
@@ -95,11 +114,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         .revision_list
         .iter()
         .map(|rev| {
-            let rev_num: Option<u64> = rev
-                .revision
-                .trim_start_matches('r')
-                .parse()
-                .ok();
+            let rev_num: Option<u64> = rev.revision.trim_start_matches('r').parse().ok();
 
             let is_current = rev_num.is_some() && rev_num == wc_rev_num;
             let is_remote = match (rev_num, wc_rev_num) {

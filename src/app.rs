@@ -3,15 +3,20 @@ use ratatui::{
     text::{Line, Span},
     widgets::ListState,
 };
+use std::collections::{BTreeSet, HashSet};
 use std::process::Command;
 
-use crate::types::{ActiveWindow, SvnFile, SvnRevision};
+use crate::types::{ActiveWindow, FileTreeNode, SvnFile, SvnRevision};
 use log::{debug, error, info, warn};
 
 pub struct App {
     pub active_window: ActiveWindow,
     pub file_list: Vec<SvnFile>,
     pub file_list_state: ListState,
+    /// Flat list of tree entries currently visible (respects collapsed dirs).
+    pub visible_items: Vec<FileTreeNode>,
+    /// Set of directory paths (with trailing `/`) that are currently collapsed.
+    pub collapsed_dirs: HashSet<String>,
     pub branch_list: Vec<String>,
     pub branch_list_state: ListState,
     pub current_diff: Vec<Line<'static>>,
@@ -28,6 +33,8 @@ impl App {
             active_window: ActiveWindow::ChangedFiles,
             file_list: Vec::new(),
             file_list_state: ListState::default(),
+            visible_items: Vec::new(),
+            collapsed_dirs: HashSet::new(),
             branch_list: Vec::new(),
             branch_list_state: ListState::default(),
             current_diff: vec![String::from("Select a file to see diff").into()],
@@ -67,12 +74,126 @@ impl App {
 
         info!("SVN status: {} changed file(s)", self.file_list.len());
 
-        if !self.file_list.is_empty() && self.file_list_state.selected().is_none() {
-            self.file_list_state.select(Some(0));
-            self.refresh_diff();
+        self.rebuild_visible_items();
+
+        if !self.visible_items.is_empty() && self.file_list_state.selected().is_none() {
+            // Select the first file entry (skip directory rows at the top).
+            let first_file = self
+                .visible_items
+                .iter()
+                .position(|n| matches!(n, FileTreeNode::File { .. }));
+            if let Some(idx) = first_file {
+                self.file_list_state.select(Some(idx));
+                self.refresh_diff();
+            } else {
+                self.file_list_state.select(Some(0));
+            }
         }
 
         self.refresh_working_copy_revision();
+    }
+
+    /// Rebuild `visible_items` from `file_list` while honouring `collapsed_dirs`.
+    /// The current selection index is clamped so it stays in-bounds.
+    fn rebuild_visible_items(&mut self) {
+        let mut result = Vec::new();
+        Self::build_tree_for_prefix("", 0, &self.file_list, &self.collapsed_dirs, &mut result);
+        self.visible_items = result;
+
+        // Keep the selection in-bounds after a rebuild.
+        let len = self.visible_items.len();
+        if len == 0 {
+            self.file_list_state.select(None);
+        } else if let Some(sel) = self.file_list_state.selected() {
+            if sel >= len {
+                self.file_list_state.select(Some(len - 1));
+            }
+        }
+    }
+
+    /// Recursively populate `result` with the visible entries rooted at `prefix`.
+    ///
+    /// * Directories are listed first (alphabetically), then files at the
+    ///   same level.
+    /// * Children of a collapsed directory are omitted.
+    fn build_tree_for_prefix(
+        prefix: &str,
+        depth: usize,
+        file_list: &[SvnFile],
+        collapsed_dirs: &HashSet<String>,
+        result: &mut Vec<FileTreeNode>,
+    ) {
+        let mut subdirs: BTreeSet<String> = BTreeSet::new();
+        let mut files_at_level: Vec<&SvnFile> = Vec::new();
+
+        for file in file_list {
+            if !file.path.starts_with(prefix) {
+                continue;
+            }
+            let rest = &file.path[prefix.len()..];
+            if let Some(slash_pos) = rest.find('/') {
+                // There is a sub-directory component – record the immediate child dir.
+                let subdir = format!("{}{}/", prefix, &rest[..slash_pos]);
+                subdirs.insert(subdir);
+            } else {
+                files_at_level.push(file);
+            }
+        }
+
+        // Emit directory rows and recurse into them (unless collapsed).
+        for dir_path in &subdirs {
+            let trimmed = dir_path.trim_end_matches('/');
+            let name = trimmed.rsplit('/').next().unwrap_or(trimmed).to_string();
+            let collapsed = collapsed_dirs.contains(dir_path.as_str());
+            result.push(FileTreeNode::Dir {
+                path: dir_path.clone(),
+                name,
+                depth,
+                collapsed,
+            });
+            if !collapsed {
+                Self::build_tree_for_prefix(
+                    dir_path,
+                    depth + 1,
+                    file_list,
+                    collapsed_dirs,
+                    result,
+                );
+            }
+        }
+
+        // Emit file rows at this level (sorted by path for stability).
+        files_at_level.sort_by(|a, b| a.path.cmp(&b.path));
+        for file in files_at_level {
+            let name = file
+                .path
+                .rsplit('/')
+                .next()
+                .unwrap_or(&file.path)
+                .to_string();
+            result.push(FileTreeNode::File {
+                status: file.status.clone(),
+                path: file.path.clone(),
+                name,
+                depth,
+            });
+        }
+    }
+
+    /// Toggle the collapsed state of the directory that is currently selected,
+    /// then rebuild the visible items.
+    pub fn toggle_folder(&mut self) {
+        if let Some(i) = self.file_list_state.selected() {
+            if let Some(FileTreeNode::Dir { path, .. }) = self.visible_items.get(i) {
+                let path = path.clone();
+                if self.collapsed_dirs.contains(&path) {
+                    self.collapsed_dirs.remove(&path);
+                } else {
+                    self.collapsed_dirs.insert(path);
+                }
+                self.rebuild_visible_items();
+            }
+        }
     }
 
     pub fn refresh_working_copy_revision(&mut self) {
@@ -244,15 +365,16 @@ impl App {
 
     pub fn refresh_diff(&mut self) {
         if let Some(i) = self.file_list_state.selected() {
-            if let Some(file) = self.file_list.get(i) {
-                debug!("Fetching diff for file: {}", file.path);
+            if let Some(FileTreeNode::File { path, .. }) = self.visible_items.get(i) {
+                let path = path.clone();
+                debug!("Fetching diff for file: {}", path);
                 let output = Command::new("svn")
                     .arg("diff")
-                    .arg(&file.path)
+                    .arg(&path)
                     .output()
                     .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
                     .unwrap_or_else(|e| {
-                        error!("Failed to fetch diff for {}: {e}", file.path);
+                        error!("Failed to fetch diff for {}: {e}", path);
                         "Error fetching diff".into()
                     });
 
@@ -375,9 +497,13 @@ impl App {
     }
 
     pub fn next_file(&mut self) {
+        let len = self.visible_items.len();
+        if len == 0 {
+            return;
+        }
         let i = match self.file_list_state.selected() {
             Some(i) => {
-                if i >= self.file_list.iter().count() - 1 {
+                if i >= len - 1 {
                     0
                 } else {
                     i + 1
@@ -386,14 +512,20 @@ impl App {
             None => 0,
         };
         self.file_list_state.select(Some(i));
-        self.refresh_diff();
+        if matches!(self.visible_items.get(i), Some(FileTreeNode::File { .. })) {
+            self.refresh_diff();
+        }
     }
 
     pub fn previous_file(&mut self) {
+        let len = self.visible_items.len();
+        if len == 0 {
+            return;
+        }
         let i = match self.file_list_state.selected() {
             Some(i) => {
                 if i == 0 {
-                    self.file_list.iter().count() - 1
+                    len - 1
                 } else {
                     i - 1
                 }
@@ -401,7 +533,9 @@ impl App {
             None => 0,
         };
         self.file_list_state.select(Some(i));
-        self.refresh_diff();
+        if matches!(self.visible_items.get(i), Some(FileTreeNode::File { .. })) {
+            self.refresh_diff();
+        }
     }
 
     pub fn scroll_diff_down(&mut self) {
