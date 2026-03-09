@@ -57,11 +57,13 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                     }
                     KeyCode::Char('j') => match app.active_window {
                         ActiveWindow::ChangedFiles => app.next_file(),
+                        ActiveWindow::Branches => app.next_branch(),
                         ActiveWindow::Diff => app.scroll_diff_down(),
                         _ => {}
                     },
                     KeyCode::Char('k') => match app.active_window {
                         ActiveWindow::ChangedFiles => app.previous_file(),
+                        ActiveWindow::Branches => app.previous_branch(),
                         ActiveWindow::Diff => app.scroll_diff_up(),
                         _ => {}
                     },
@@ -75,7 +77,10 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                             app.scroll_diff_prev_hunk();
                         }
                     }
-                    KeyCode::Char('r') => app.refresh_status(), // Manual refresh
+                    KeyCode::Char('r') => {
+                        app.refresh_status();
+                        app.refresh_branches();
+                    }
                     _ => {}
                 }
             }

@@ -11,6 +11,8 @@ pub struct App {
     pub active_window: ActiveWindow,
     pub file_list: Vec<SvnFile>,
     pub file_list_state: ListState,
+    pub branch_list: Vec<String>,
+    pub branch_list_state: ListState,
     pub current_diff: Vec<Line<'static>>,
     pub diff_scroll: u16,
 }
@@ -21,10 +23,13 @@ impl App {
             active_window: ActiveWindow::ChangedFiles,
             file_list: Vec::new(),
             file_list_state: ListState::default(),
+            branch_list: Vec::new(),
+            branch_list_state: ListState::default(),
             current_diff: vec![String::from("Select a file to see diff").into()],
             diff_scroll: 0,
         };
         app.refresh_status();
+        app.refresh_branches();
         app
     }
 
@@ -92,6 +97,70 @@ impl App {
                 self.diff_scroll = 0;
             }
         }
+    }
+
+    pub fn refresh_branches(&mut self) {
+        let result = Command::new("svn")
+            .arg("list")
+            .arg("^/branches")
+            .output();
+
+        let output = match result {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+            Ok(o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+                self.branch_list = vec![format!(
+                    "Error: {}",
+                    stderr.lines().next().unwrap_or("svn list failed")
+                )];
+                self.branch_list_state = ListState::default();
+                return;
+            }
+            Err(_) => {
+                self.branch_list = vec!["Error: failed to run svn".to_string()];
+                self.branch_list_state = ListState::default();
+                return;
+            }
+        };
+
+        self.branch_list = output
+            .lines()
+            // `svn list` appends a trailing slash to directory entries (branches are directories)
+            .map(|line| line.trim_end_matches('/').to_string())
+            .filter(|line| !line.is_empty())
+            .collect();
+
+        if !self.branch_list.is_empty() && self.branch_list_state.selected().is_none() {
+            self.branch_list_state.select(Some(0));
+        }
+    }
+
+    pub fn next_branch(&mut self) {
+        let i = match self.branch_list_state.selected() {
+            Some(i) => {
+                if i >= self.branch_list.len().saturating_sub(1) {
+                    0
+                } else {
+                    i + 1
+                }
+            }
+            None => 0,
+        };
+        self.branch_list_state.select(Some(i));
+    }
+
+    pub fn previous_branch(&mut self) {
+        let i = match self.branch_list_state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    self.branch_list.len().saturating_sub(1)
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.branch_list_state.select(Some(i));
     }
 
     pub fn next_file(&mut self) {

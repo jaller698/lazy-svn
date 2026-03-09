@@ -60,10 +60,31 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     f.render_stateful_widget(list, left_chunks[0], &mut app.file_list_state);
 
     // Other Windows (Placeholders)
-    f.render_widget(
-        Block::default().title(" Branches ").borders(Borders::ALL),
-        left_chunks[1],
-    );
+    let branch_border_color = if app.active_window == ActiveWindow::Branches {
+        Color::Yellow
+    } else {
+        Color::Gray
+    };
+    let branch_items: Vec<ListItem> = app
+        .branch_list
+        .iter()
+        .map(|name| ListItem::new(format!(" {}", name)))
+        .collect();
+    let branch_list = List::new(branch_items)
+        .block(
+            Block::default()
+                .title(" Branches (j/k) ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(branch_border_color)),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(Color::Rgb(60, 60, 60))
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol(">> ");
+    f.render_stateful_widget(branch_list, left_chunks[1], &mut app.branch_list_state);
+
     f.render_widget(
         Block::default().title(" Revisions ").borders(Borders::ALL),
         left_chunks[2],
