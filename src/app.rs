@@ -100,10 +100,27 @@ impl App {
     }
 
     pub fn refresh_branches(&mut self) {
-        let result = Command::new("svn")
-            .arg("list")
-            .arg("^/branches")
-            .output();
+        // Get the repository root URL first so we can list branches from the remote
+        let repos_root = Command::new("svn")
+            .arg("info")
+            .arg("--show-item")
+            .arg("repos-root-url")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+
+        let repos_root = match repos_root {
+            Some(url) if !url.is_empty() => url,
+            _ => {
+                self.branch_list = vec!["Error: could not determine repository root".to_string()];
+                self.branch_list_state = ListState::default();
+                return;
+            }
+        };
+
+        let branches_url = format!("{}/branches", repos_root);
+        let result = Command::new("svn").arg("list").arg(&branches_url).output();
 
         let output = match result {
             Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
