@@ -16,6 +16,7 @@ pub struct App {
     pub revision_list: Vec<SvnRevision>,
     pub revision_list_state: ListState,
     pub working_copy_revision: Option<String>,
+    pub repository_url: Option<String>,
 }
 
 impl App {
@@ -29,6 +30,7 @@ impl App {
             revision_list: Vec::new(),
             revision_list_state: ListState::default(),
             working_copy_revision: None,
+            repository_url: None,
         };
         app.refresh_status();
         app.refresh_log();
@@ -74,11 +76,19 @@ impl App {
         self.working_copy_revision = output.lines().find_map(|line| {
             line.strip_prefix("Revision: ").map(|r| r.trim().to_string())
         });
+
+        self.repository_url = output.lines().find_map(|line| {
+            line.strip_prefix("URL: ").map(|u| u.trim().to_string())
+        });
     }
 
     pub fn refresh_log(&mut self) {
+        // Use -r HEAD:1 so that revisions on the remote that are newer than
+        // the working copy are also included in the list.
         let output = Command::new("svn")
             .arg("log")
+            .arg("-r")
+            .arg("HEAD:1")
             .arg("--limit")
             .arg("50")
             .output()
@@ -139,10 +149,12 @@ impl App {
                     self.diff_scroll = 0;
                     return;
                 }
-                let output = Command::new("svn")
-                    .arg("diff")
-                    .arg("-c")
-                    .arg(rev_num)
+                let mut cmd = Command::new("svn");
+                cmd.arg("diff").arg("-c").arg(rev_num);
+                if let Some(url) = &self.repository_url {
+                    cmd.arg(url);
+                }
+                let output = cmd
                     .output()
                     .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
                     .unwrap_or_else(|_| "Error fetching revision diff".into());

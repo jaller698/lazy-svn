@@ -66,15 +66,26 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     );
 
     // Revisions List
+    let wc_rev_num: Option<u64> = app
+        .working_copy_revision
+        .as_deref()
+        .and_then(|r| r.parse().ok());
+
     let rev_items: Vec<ListItem> = app
         .revision_list
         .iter()
         .map(|rev| {
-            let is_current = app
-                .working_copy_revision
-                .as_deref()
-                .map(|wc| rev.revision.trim_start_matches('r') == wc)
-                .unwrap_or(false);
+            let rev_num: Option<u64> = rev
+                .revision
+                .trim_start_matches('r')
+                .parse()
+                .ok();
+
+            let is_current = rev_num.is_some() && rev_num == wc_rev_num;
+            let is_remote = match (rev_num, wc_rev_num) {
+                (Some(r), Some(wc)) => r > wc,
+                _ => false,
+            };
 
             let label = if rev.message.is_empty() {
                 format!("{} | {} | {}", rev.revision, rev.author, rev.date)
@@ -88,6 +99,9 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             if is_current {
                 ListItem::new(format!("{} [working copy]", label))
                     .style(Style::default().fg(Color::Cyan))
+            } else if is_remote {
+                ListItem::new(format!("{} [remote]", label))
+                    .style(Style::default().fg(Color::Yellow))
             } else {
                 ListItem::new(label)
             }
