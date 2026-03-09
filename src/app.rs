@@ -5,7 +5,7 @@ use ratatui::{
 };
 use std::process::Command;
 
-use crate::types::{ActiveWindow, SvnFile};
+use crate::types::{ActiveWindow, SvnFile, SvnRevision};
 
 pub struct App {
     pub active_window: ActiveWindow,
@@ -13,6 +13,8 @@ pub struct App {
     pub file_list_state: ListState,
     pub current_diff: Vec<Line<'static>>,
     pub diff_scroll: u16,
+    pub revision_list: Vec<SvnRevision>,
+    pub revision_list_state: ListState,
 }
 
 impl App {
@@ -23,8 +25,11 @@ impl App {
             file_list_state: ListState::default(),
             current_diff: vec![String::from("Select a file to see diff").into()],
             diff_scroll: 0,
+            revision_list: Vec::new(),
+            revision_list_state: ListState::default(),
         };
         app.refresh_status();
+        app.refresh_log();
         app
     }
 
@@ -52,6 +57,105 @@ impl App {
         if !self.file_list.is_empty() && self.file_list_state.selected().is_none() {
             self.file_list_state.select(Some(0));
             self.refresh_diff();
+        }
+    }
+
+    pub fn refresh_log(&mut self) {
+        let output = Command::new("svn")
+            .arg("log")
+            .arg("--limit")
+            .arg("50")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+
+        self.revision_list = output
+            .split("------------------------------------------------------------------------")
+            .filter_map(|block| {
+                let block = block.trim();
+                if block.is_empty() {
+                    return None;
+                }
+                let mut lines = block.lines();
+                let header = lines.next()?;
+                let parts: Vec<&str> = header.splitn(4, " | ").collect();
+                if parts.len() >= 3 {
+                    // Skip the blank line between header and message
+                    lines.next();
+                    let message = lines
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .trim()
+                        .to_string();
+                    Some(SvnRevision {
+                        revision: parts[0].to_string(),
+                        author: parts[1].to_string(),
+                        date: parts[2]
+                            .splitn(2, ' ')
+                            .take(2)
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                        message,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if !self.revision_list.is_empty() && self.revision_list_state.selected().is_none() {
+            self.revision_list_state.select(Some(0));
+        }
+    }
+
+    pub fn next_revision(&mut self) {
+        let len = self.revision_list.len();
+        if len == 0 {
+            return;
+        }
+        let i = match self.revision_list_state.selected() {
+            Some(i) => {
+                if i >= len - 1 {
+                    0
+                } else {
+                    i + 1
+                }
+            }
+            None => 0,
+        };
+        self.revision_list_state.select(Some(i));
+    }
+
+    pub fn previous_revision(&mut self) {
+        let len = self.revision_list.len();
+        if len == 0 {
+            return;
+        }
+        let i = match self.revision_list_state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    len - 1
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.revision_list_state.select(Some(i));
+    }
+
+    pub fn update_to_revision(&mut self) {
+        if let Some(i) = self.revision_list_state.selected() {
+            if let Some(rev) = self.revision_list.get(i) {
+                let rev_num = rev.revision.trim_start_matches('r');
+                Command::new("svn")
+                    .arg("update")
+                    .arg("-r")
+                    .arg(rev_num)
+                    .output()
+                    .ok();
+                self.refresh_status();
+            }
         }
     }
 

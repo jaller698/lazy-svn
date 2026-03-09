@@ -59,15 +59,50 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
     f.render_stateful_widget(list, left_chunks[0], &mut app.file_list_state);
 
-    // Other Windows (Placeholders)
+    // Other Windows (Branches placeholder)
     f.render_widget(
         Block::default().title(" Branches ").borders(Borders::ALL),
         left_chunks[1],
     );
-    f.render_widget(
-        Block::default().title(" Revisions ").borders(Borders::ALL),
-        left_chunks[2],
-    );
+
+    // Revisions List
+    let rev_items: Vec<ListItem> = app
+        .revision_list
+        .iter()
+        .map(|rev| {
+            let label = if rev.message.is_empty() {
+                format!("{} | {} | {}", rev.revision, rev.author, rev.date)
+            } else {
+                format!(
+                    "{} | {} | {} | {}",
+                    rev.revision, rev.author, rev.date, rev.message
+                )
+            };
+            ListItem::new(label)
+        })
+        .collect();
+
+    let rev_border_color = if app.active_window == ActiveWindow::Revisions {
+        Color::Yellow
+    } else {
+        Color::Gray
+    };
+
+    let rev_list = List::new(rev_items)
+        .block(
+            Block::default()
+                .title(" Revisions (j/k: navigate | Enter: update) ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(rev_border_color)),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(Color::Rgb(60, 60, 60))
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol(">> ");
+
+    f.render_stateful_widget(rev_list, left_chunks[2], &mut app.revision_list_state);
 
     // Diff View
     let diff_style = if app.active_window == ActiveWindow::Diff {
