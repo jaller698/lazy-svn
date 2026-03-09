@@ -84,6 +84,22 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                         log::info!("User quit");
                         return Ok(());
                     }
+                    KeyCode::Char('1') => {
+                        app.active_window = ActiveWindow::ChangedFiles;
+                        log::debug!("Switched active window to ChangedFiles");
+                    }
+                    KeyCode::Char('2') => {
+                        app.active_window = ActiveWindow::Branches;
+                        log::debug!("Switched active window to Branches");
+                    }
+                    KeyCode::Char('3') => {
+                        app.active_window = ActiveWindow::Revisions;
+                        log::debug!("Switched active window to Revisions");
+                    }
+                    KeyCode::Char('4') => {
+                        app.active_window = ActiveWindow::Diff;
+                        log::debug!("Switched active window to Diff");
+                    }
                     KeyCode::Tab => {
                         app.active_window = match app.active_window {
                             ActiveWindow::ChangedFiles => ActiveWindow::Branches,
