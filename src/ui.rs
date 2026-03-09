@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::types::{ActiveWindow, CommitField, FileTreeNode};
+use crate::types::{ActiveWindow, CommitField, FileTreeNode, KEYBINDINGS};
 
 /// Returns a centred rectangle of the given percentage size inside `r`.
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
@@ -79,8 +79,11 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                     "D" => Style::default().fg(Color::Red),
                     _ => Style::default().fg(Color::White),
                 };
-                ListItem::new(format!("{}[{}] {} {}", indent, selected_marker, status, name))
-                    .style(style)
+                ListItem::new(format!(
+                    "{}[{}] {} {}",
+                    indent, selected_marker, status, name
+                ))
+                .style(style)
             }
         })
         .collect();
@@ -203,6 +206,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     };
 
     // Pass the pre-styled lines from our app state
+    // But also ensure the lines are wrapped in a Paragraph with the correct border and scroll offset
     let diff_paragraph = Paragraph::new(app.current_diff.clone())
         .block(
             Block::default()
@@ -210,7 +214,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(diff_style)),
         )
-        .scroll((app.diff_scroll, 0));
+        .scroll((app.diff_scroll, 0))
+        .wrap(ratatui::widgets::Wrap { trim: false });
 
     f.render_widget(diff_paragraph, chunks[1]);
 
@@ -237,7 +242,11 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
         // Helper: cursor suffix shown only when a field is active.
         let cur = |field: &CommitField| -> &str {
-            if *field == app.commit_active_field { "_" } else { "" }
+            if *field == app.commit_active_field {
+                "_"
+            } else {
+                ""
+            }
         };
 
         // ── Message field ───────────────────────────────────────────────
@@ -246,9 +255,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         } else {
             inactive_label
         };
-        let mut msg_lines: Vec<Line> = vec![
-            Line::from(Span::styled("Message:", msg_label_style)),
-        ];
+        let mut msg_lines: Vec<Line> = vec![Line::from(Span::styled("Message:", msg_label_style))];
         if app.commit_message.trim().is_empty() {
             msg_lines.push(Line::from(vec![
                 Span::styled(cur(&CommitField::Message), value_style),
@@ -317,5 +324,88 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             .wrap(Wrap { trim: false });
 
         f.render_widget(popup, area);
+    }
+    if app.active_window == ActiveWindow::Help {
+        let area = centered_rect(60, 60, f.area());
+        let lines: Vec<Line> = std::iter::once(Line::from(" Keybindings - press ? to close"))
+            .chain(std::iter::once(Line::from("")))
+            .chain(
+                KEYBINDINGS
+                    .iter()
+                    .map(|kb| Line::from(format!("  {:6}  {}", kb.key, kb.description))),
+            )
+            .collect();
+        let help_text = Text::from(lines);
+        let popup = Paragraph::new(help_text).block(
+            Block::default()
+                .title(" Help ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow)),
+        );
+        f.render_widget(Clear, area);
+        f.render_widget(popup, area);
+    }
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Fill(1),
+            Constraint::Percentage(percent_y),
+            Constraint::Fill(1),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Fill(1),
+            Constraint::Percentage(percent_x),
+            Constraint::Fill(1),
+        ])
+        .split(popup_layout[1])[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::App;
+    use crate::types::KEYBINDINGS;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    /// Render the UI with the help window open and collect every cell's symbol into
+    /// a single string.  We then verify that every key listed in `KEYBINDINGS` appears
+    /// somewhere in that rendered text.  Adding a new entry to `KEYBINDINGS` is
+    /// sufficient to make the test cover it automatically.
+    #[test]
+    fn test_help_window_shows_all_keybindings() {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::test_new();
+        app.open_help();
+
+        terminal.draw(|f| ui(f, &mut app)).unwrap();
+
+        let buffer = terminal.backend().buffer().clone();
+        // Join all cell symbols row-by-row so that multi-character keys like "Tab"
+        // or "Enter" are preserved as contiguous substrings.
+        let content: String = (0..buffer.area().height)
+            .map(|y| {
+                (0..buffer.area().width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        for kb in KEYBINDINGS {
+            assert!(
+                content.contains(kb.key),
+                "Help window is missing keybinding: '{}' (description: '{}')",
+                kb.key,
+                kb.description
+            );
+        }
     }
 }

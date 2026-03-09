@@ -3,7 +3,9 @@ mod types;
 mod ui;
 
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -91,9 +93,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                             log::debug!("Commit cancelled");
                         }
                         // Ctrl+Enter submits from any field.
-                        KeyCode::Enter
-                            if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                        {
+                        KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             log::info!("User confirmed commit (Ctrl+Enter)");
                             app.do_commit();
                         }
@@ -144,7 +144,22 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                     continue;
                 }
 
+                // When the help window is focused only a few keys are active.
+                if app.active_window == ActiveWindow::Help {
+                    match key.code {
+                        KeyCode::Char('?') => app.close_help(),
+                        KeyCode::Char('q') => {
+                            log::info!("User quit");
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
                 match key.code {
+                    KeyCode::Char('?') => {
+                        app.open_help();
+                    }
                     KeyCode::Char('q') => {
                         log::info!("User quit");
                         return Ok(());
@@ -172,6 +187,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                             ActiveWindow::Revisions => ActiveWindow::Diff,
                             ActiveWindow::Diff => ActiveWindow::ChangedFiles,
                             ActiveWindow::Commit => ActiveWindow::ChangedFiles,
+                            ActiveWindow::Help => ActiveWindow::ChangedFiles,
                         };
                         log::debug!("Switched active window to {:?}", app.active_window);
                     }
@@ -181,6 +197,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                         ActiveWindow::Revisions => app.next_revision(),
                         ActiveWindow::Diff => app.scroll_diff_down(),
                         ActiveWindow::Commit => {}
+                        ActiveWindow::Help => {}
                     },
                     KeyCode::Char('k') => match app.active_window {
                         ActiveWindow::ChangedFiles => app.previous_file(),
@@ -188,6 +205,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                         ActiveWindow::Revisions => app.previous_revision(),
                         ActiveWindow::Diff => app.scroll_diff_up(),
                         ActiveWindow::Commit => {}
+                        ActiveWindow::Help => {}
                     },
                     KeyCode::Char('}') => {
                         if app.active_window == ActiveWindow::Diff {
@@ -206,16 +224,14 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                         app.refresh_log();
                     }
                     // Enter: fold/unfold directory in ChangedFiles; update revision in Revisions.
-                    KeyCode::Enter => {
-                        match app.active_window {
-                            ActiveWindow::ChangedFiles => app.toggle_folder(),
-                            ActiveWindow::Revisions => {
-                                log::info!("Updating working copy to selected revision");
-                                app.update_to_revision();
-                            }
-                            _ => {}
+                    KeyCode::Enter => match app.active_window {
+                        ActiveWindow::ChangedFiles => app.toggle_folder(),
+                        ActiveWindow::Revisions => {
+                            log::info!("Updating working copy to selected revision");
+                            app.update_to_revision();
                         }
-                    }
+                        _ => {}
+                    },
                     // Space: toggle file selection in ChangedFiles (files only).
                     KeyCode::Char(' ') => {
                         if app.active_window == ActiveWindow::ChangedFiles {
@@ -236,4 +252,3 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
         }
     }
 }
-

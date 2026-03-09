@@ -13,6 +13,7 @@ pub enum ActiveWindow {
     Revisions,
     Diff,
     Commit,
+    Help,
 }
 
 pub struct SvnFile {
@@ -53,3 +54,66 @@ pub enum FileTreeNode {
         depth: usize,
     },
 }
+pub struct Keybinding {
+    pub key: &'static str,
+    pub description: &'static str,
+}
+
+pub const KEYBINDINGS: &[Keybinding] = &[
+    Keybinding {
+        key: "?",
+        description: "Show/hide this help window",
+    },
+    Keybinding {
+        key: "q",
+        description: "Quit",
+    },
+    Keybinding {
+        key: "Tab",
+        description: "Switch to next panel",
+    },
+    Keybinding {
+        key: "1",
+        description: "Switch to Files panel",
+    },
+    Keybinding {
+        key: "2",
+        description: "Switch to Branches panel",
+    },
+    Keybinding {
+        key: "3",
+        description: "Switch to Revisions panel",
+    },
+    Keybinding {
+        key: "4",
+        description: "Switch to Diff panel",
+    },
+    Keybinding {
+        key: "j",
+        description: "Move down / scroll diff down",
+    },
+    Keybinding {
+        key: "k",
+        description: "Move up / scroll diff up",
+    },
+    Keybinding {
+        key: "}",
+        description: "Jump to next hunk (Diff panel only)",
+    },
+    Keybinding {
+        key: "{",
+        description: "Jump to previous hunk (Diff panel only)",
+    },
+    Keybinding {
+        key: "r",
+        description: "Refresh all data",
+    },
+    Keybinding {
+        key: "Enter",
+        description: "Update to selected revision (Revisions panel only)",
+    },
+    Keybinding {
+        key: "Space",
+        description: "Toggle folder (Files panel only)",
+    },
+];
