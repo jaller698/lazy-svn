@@ -70,6 +70,12 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         .revision_list
         .iter()
         .map(|rev| {
+            let is_current = app
+                .working_copy_revision
+                .as_deref()
+                .map(|wc| rev.revision.trim_start_matches('r') == wc)
+                .unwrap_or(false);
+
             let label = if rev.message.is_empty() {
                 format!("{} | {} | {}", rev.revision, rev.author, rev.date)
             } else {
@@ -78,7 +84,13 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                     rev.revision, rev.author, rev.date, rev.message
                 )
             };
-            ListItem::new(label)
+
+            if is_current {
+                ListItem::new(format!("{} [working copy]", label))
+                    .style(Style::default().fg(Color::Cyan))
+            } else {
+                ListItem::new(label)
+            }
         })
         .collect();
 

@@ -15,6 +15,7 @@ pub struct App {
     pub diff_scroll: u16,
     pub revision_list: Vec<SvnRevision>,
     pub revision_list_state: ListState,
+    pub working_copy_revision: Option<String>,
 }
 
 impl App {
@@ -27,6 +28,7 @@ impl App {
             diff_scroll: 0,
             revision_list: Vec::new(),
             revision_list_state: ListState::default(),
+            working_copy_revision: None,
         };
         app.refresh_status();
         app.refresh_log();
@@ -58,6 +60,20 @@ impl App {
             self.file_list_state.select(Some(0));
             self.refresh_diff();
         }
+
+        self.refresh_working_copy_revision();
+    }
+
+    pub fn refresh_working_copy_revision(&mut self) {
+        let output = Command::new("svn")
+            .arg("info")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+
+        self.working_copy_revision = output.lines().find_map(|line| {
+            line.strip_prefix("Revision: ").map(|r| r.trim().to_string())
+        });
     }
 
     pub fn refresh_log(&mut self) {
@@ -109,10 +125,14 @@ impl App {
         }
     }
 
+    fn revision_number(revision: &str) -> &str {
+        revision.trim_start_matches('r')
+    }
+
     pub fn refresh_revision_diff(&mut self) {
         if let Some(i) = self.revision_list_state.selected() {
             if let Some(rev) = self.revision_list.get(i) {
-                let rev_num = rev.revision.trim_start_matches('r');
+                let rev_num = Self::revision_number(&rev.revision);
                 if !rev_num.chars().all(|c| c.is_ascii_digit()) {
                     self.current_diff =
                         vec![Line::from("Invalid revision number".to_string())];
@@ -174,7 +194,7 @@ impl App {
     pub fn update_to_revision(&mut self) {
         if let Some(i) = self.revision_list_state.selected() {
             if let Some(rev) = self.revision_list.get(i) {
-                let rev_num = rev.revision.trim_start_matches('r');
+                let rev_num = Self::revision_number(&rev.revision);
                 if !rev_num.chars().all(|c| c.is_ascii_digit()) {
                     return;
                 }
