@@ -11,6 +11,9 @@ use log::{debug, error, info, warn};
 
 pub struct App {
     pub active_window: ActiveWindow,
+    /// Window that was active before the help popup was opened; used to
+    /// restore focus when help is closed.
+    pub prev_window: Option<ActiveWindow>,
     pub file_list: Vec<SvnFile>,
     pub file_list_state: ListState,
     /// Flat list of tree entries currently visible (respects collapsed dirs).
@@ -31,6 +34,7 @@ impl App {
     pub fn new() -> App {
         let mut app = App {
             active_window: ActiveWindow::ChangedFiles,
+            prev_window: None,
             file_list: Vec::new(),
             file_list_state: ListState::default(),
             visible_items: Vec::new(),
@@ -48,6 +52,44 @@ impl App {
         app.refresh_branches();
         app.refresh_log();
         app
+    }
+
+    /// Open the help window, saving the current active window so it can be
+    /// restored when help is closed.
+    pub fn open_help(&mut self) {
+        self.prev_window = Some(self.active_window.clone());
+        self.active_window = ActiveWindow::Help;
+        log::debug!("Opened help window");
+    }
+
+    /// Close the help window and restore the previously active window.
+    pub fn close_help(&mut self) {
+        self.active_window = self
+            .prev_window
+            .take()
+            .unwrap_or(ActiveWindow::ChangedFiles);
+        log::debug!("Closed help window, restored to {:?}", self.active_window);
+    }
+
+    /// Construct a minimal `App` for use in tests without running any SVN commands.
+    #[cfg(test)]
+    pub fn test_new() -> App {
+        App {
+            active_window: ActiveWindow::ChangedFiles,
+            prev_window: None,
+            file_list: Vec::new(),
+            file_list_state: ListState::default(),
+            visible_items: Vec::new(),
+            collapsed_dirs: HashSet::new(),
+            branch_list: Vec::new(),
+            branch_list_state: ListState::default(),
+            current_diff: vec![String::from("Select a file to see diff").into()],
+            diff_scroll: 0,
+            revision_list: Vec::new(),
+            revision_list_state: ListState::default(),
+            working_copy_revision: None,
+            repository_url: None,
+        }
     }
 
     pub fn refresh_status(&mut self) {
@@ -152,13 +194,7 @@ impl App {
                 collapsed,
             });
             if !collapsed {
-                Self::build_tree_for_prefix(
-                    dir_path,
-                    depth + 1,
-                    file_list,
-                    collapsed_dirs,
-                    result,
-                );
+                Self::build_tree_for_prefix(dir_path, depth + 1, file_list, collapsed_dirs, result);
             }
         }
 
@@ -440,7 +476,11 @@ impl App {
             Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
             Ok(o) => {
                 let stderr = String::from_utf8_lossy(&o.stderr).to_string();
-                let msg = stderr.lines().next().unwrap_or("svn list failed").to_string();
+                let msg = stderr
+                    .lines()
+                    .next()
+                    .unwrap_or("svn list failed")
+                    .to_string();
                 error!("svn list failed for {branches_url}: {msg}");
                 self.branch_list = vec![format!("Error: {msg}")];
                 self.branch_list_state = ListState::default();
