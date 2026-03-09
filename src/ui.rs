@@ -77,12 +77,14 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     };
 
     // Pass the pre-styled lines from our app state
-    let diff_paragraph = Paragraph::new(app.current_diff.clone()).block(
-        Block::default()
-            .title(" Diff View ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(diff_style)),
-    );
+    let diff_paragraph = Paragraph::new(app.current_diff.clone())
+        .block(
+            Block::default()
+                .title(" Diff View (j/k: scroll | {/}: hunk) ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(diff_style)),
+        )
+        .scroll((app.diff_scroll, 0));
 
     f.render_widget(diff_paragraph, chunks[1]);
 }

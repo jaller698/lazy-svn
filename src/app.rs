@@ -12,6 +12,7 @@ pub struct App {
     pub file_list: Vec<SvnFile>,
     pub file_list_state: ListState,
     pub current_diff: Vec<Line<'static>>,
+    pub diff_scroll: u16,
 }
 
 impl App {
@@ -21,6 +22,7 @@ impl App {
             file_list: Vec::new(),
             file_list_state: ListState::default(),
             current_diff: vec![String::from("Select a file to see diff").into()],
+            diff_scroll: 0,
         };
         app.refresh_status();
         app
@@ -87,6 +89,7 @@ impl App {
                         }
                     })
                     .collect();
+                self.diff_scroll = 0;
             }
         }
     }
@@ -119,6 +122,39 @@ impl App {
         };
         self.file_list_state.select(Some(i));
         self.refresh_diff();
+    }
+
+    pub fn scroll_diff_down(&mut self) {
+        let max_scroll = self.current_diff.len().saturating_sub(1) as u16;
+        if self.diff_scroll < max_scroll {
+            self.diff_scroll += 1;
+        }
+    }
+
+    pub fn scroll_diff_up(&mut self) {
+        self.diff_scroll = self.diff_scroll.saturating_sub(1);
+    }
+
+    pub fn scroll_diff_next_hunk(&mut self) {
+        let start = (self.diff_scroll as usize).saturating_add(1);
+        if let Some(offset) = self.current_diff[start..].iter().position(|line| {
+            line.spans
+                .first()
+                .map_or(false, |s| s.content.starts_with("@@"))
+        }) {
+            self.diff_scroll = (start + offset) as u16;
+        }
+    }
+
+    pub fn scroll_diff_prev_hunk(&mut self) {
+        let end = self.diff_scroll as usize;
+        if let Some(pos) = self.current_diff[..end].iter().rposition(|line| {
+            line.spans
+                .first()
+                .map_or(false, |s| s.content.starts_with("@@"))
+        }) {
+            self.diff_scroll = pos as u16;
+        }
     }
 }
 
