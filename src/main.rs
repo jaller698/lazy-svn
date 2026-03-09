@@ -55,14 +55,24 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                             ActiveWindow::Diff => ActiveWindow::ChangedFiles,
                         };
                     }
-                    KeyCode::Char('j') => {
-                        if app.active_window == ActiveWindow::ChangedFiles {
-                            app.next_file()
+                    KeyCode::Char('j') => match app.active_window {
+                        ActiveWindow::ChangedFiles => app.next_file(),
+                        ActiveWindow::Diff => app.scroll_diff_down(),
+                        _ => {}
+                    },
+                    KeyCode::Char('k') => match app.active_window {
+                        ActiveWindow::ChangedFiles => app.previous_file(),
+                        ActiveWindow::Diff => app.scroll_diff_up(),
+                        _ => {}
+                    },
+                    KeyCode::Char('}') => {
+                        if app.active_window == ActiveWindow::Diff {
+                            app.scroll_diff_next_hunk();
                         }
                     }
-                    KeyCode::Char('k') => {
-                        if app.active_window == ActiveWindow::ChangedFiles {
-                            app.previous_file()
+                    KeyCode::Char('{') => {
+                        if app.active_window == ActiveWindow::Diff {
+                            app.scroll_diff_prev_hunk();
                         }
                     }
                     KeyCode::Char('r') => app.refresh_status(), // Manual refresh
