@@ -105,6 +105,31 @@ impl App {
 
         if !self.revision_list.is_empty() && self.revision_list_state.selected().is_none() {
             self.revision_list_state.select(Some(0));
+            self.refresh_revision_diff();
+        }
+    }
+
+    pub fn refresh_revision_diff(&mut self) {
+        if let Some(i) = self.revision_list_state.selected() {
+            if let Some(rev) = self.revision_list.get(i) {
+                let rev_num = rev.revision.trim_start_matches('r');
+                if !rev_num.chars().all(|c| c.is_ascii_digit()) {
+                    self.current_diff =
+                        vec![Line::from("Invalid revision number".to_string())];
+                    self.diff_scroll = 0;
+                    return;
+                }
+                let output = Command::new("svn")
+                    .arg("diff")
+                    .arg("-c")
+                    .arg(rev_num)
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                    .unwrap_or_else(|_| "Error fetching revision diff".into());
+
+                self.current_diff = Self::style_diff_output(&output);
+                self.diff_scroll = 0;
+            }
         }
     }
 
@@ -124,6 +149,7 @@ impl App {
             None => 0,
         };
         self.revision_list_state.select(Some(i));
+        self.refresh_revision_diff();
     }
 
     pub fn previous_revision(&mut self) {
@@ -142,12 +168,16 @@ impl App {
             None => 0,
         };
         self.revision_list_state.select(Some(i));
+        self.refresh_revision_diff();
     }
 
     pub fn update_to_revision(&mut self) {
         if let Some(i) = self.revision_list_state.selected() {
             if let Some(rev) = self.revision_list.get(i) {
                 let rev_num = rev.revision.trim_start_matches('r');
+                if !rev_num.chars().all(|c| c.is_ascii_digit()) {
+                    return;
+                }
                 Command::new("svn")
                     .arg("update")
                     .arg("-r")
@@ -169,33 +199,36 @@ impl App {
                     .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
                     .unwrap_or_else(|_| "Error fetching diff".into());
 
-                // Convert raw string into styled Ratatui Lines
-                self.current_diff = output
-                    .lines()
-                    .map(|line| {
-                        if line.starts_with('+') && !line.starts_with("+++") {
-                            Line::from(Span::styled(
-                                line.to_string(),
-                                Style::default().fg(Color::Green),
-                            ))
-                        } else if line.starts_with('-') && !line.starts_with("---") {
-                            Line::from(Span::styled(
-                                line.to_string(),
-                                Style::default().fg(Color::Red),
-                            ))
-                        } else if line.starts_with("@@") {
-                            Line::from(Span::styled(
-                                line.to_string(),
-                                Style::default().fg(Color::Cyan),
-                            ))
-                        } else {
-                            Line::from(line.to_string())
-                        }
-                    })
-                    .collect();
+                self.current_diff = Self::style_diff_output(&output);
                 self.diff_scroll = 0;
             }
         }
+    }
+
+    fn style_diff_output(output: &str) -> Vec<Line<'static>> {
+        output
+            .lines()
+            .map(|line| {
+                if line.starts_with('+') && !line.starts_with("+++") {
+                    Line::from(Span::styled(
+                        line.to_string(),
+                        Style::default().fg(Color::Green),
+                    ))
+                } else if line.starts_with('-') && !line.starts_with("---") {
+                    Line::from(Span::styled(
+                        line.to_string(),
+                        Style::default().fg(Color::Red),
+                    ))
+                } else if line.starts_with("@@") {
+                    Line::from(Span::styled(
+                        line.to_string(),
+                        Style::default().fg(Color::Cyan),
+                    ))
+                } else {
+                    Line::from(line.to_string())
+                }
+            })
+            .collect()
     }
 
     pub fn next_file(&mut self) {
