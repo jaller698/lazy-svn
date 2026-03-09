@@ -17,6 +17,8 @@ pub struct App {
     pub visible_items: Vec<FileTreeNode>,
     /// Set of directory paths (with trailing `/`) that are currently collapsed.
     pub collapsed_dirs: HashSet<String>,
+    /// Set of file paths that the user has marked for the next commit.
+    pub selected_files: HashSet<String>,
     pub branch_list: Vec<String>,
     pub branch_list_state: ListState,
     pub current_diff: Vec<Line<'static>>,
@@ -25,6 +27,8 @@ pub struct App {
     pub revision_list_state: ListState,
     pub working_copy_revision: Option<String>,
     pub repository_url: Option<String>,
+    /// Commit message being composed in the commit popup.
+    pub commit_message: String,
 }
 
 impl App {
@@ -35,6 +39,7 @@ impl App {
             file_list_state: ListState::default(),
             visible_items: Vec::new(),
             collapsed_dirs: HashSet::new(),
+            selected_files: HashSet::new(),
             branch_list: Vec::new(),
             branch_list_state: ListState::default(),
             current_diff: vec![String::from("Select a file to see diff").into()],
@@ -43,6 +48,7 @@ impl App {
             revision_list_state: ListState::default(),
             working_copy_revision: None,
             repository_url: None,
+            commit_message: String::new(),
         };
         app.refresh_status();
         app.refresh_branches();
@@ -194,6 +200,67 @@ impl App {
                 self.rebuild_visible_items();
             }
         }
+    }
+
+    /// Toggle whether the currently selected file is marked for the next commit.
+    /// Has no effect when the selected item is a directory.
+    pub fn toggle_file_selection(&mut self) {
+        if let Some(i) = self.file_list_state.selected() {
+            if let Some(FileTreeNode::File { path, .. }) = self.visible_items.get(i) {
+                let path = path.clone();
+                if self.selected_files.contains(&path) {
+                    self.selected_files.remove(&path);
+                } else {
+                    self.selected_files.insert(path);
+                }
+            }
+        }
+    }
+
+    /// Run `svn commit` with the current `commit_message`.
+    /// Commits the explicitly selected files, or all changed files if none are selected.
+    /// Clears the selection and commit message on completion and refreshes state.
+    /// Returns `false` when the commit was not attempted (e.g. empty message).
+    pub fn do_commit(&mut self) -> bool {
+        let message = self.commit_message.trim().to_string();
+        if message.is_empty() {
+            warn!("do_commit: empty commit message, aborting");
+            return false;
+        }
+
+        let mut cmd = Command::new("svn");
+        cmd.arg("commit").arg("-m").arg(&message);
+
+        // `file_list` is populated from `svn status` and contains only file paths,
+        // not bare directory entries, so it is safe to pass directly to `svn commit`.
+        let files: Vec<String> = if self.selected_files.is_empty() {
+            self.file_list.iter().map(|f| f.path.clone()).collect()
+        } else {
+            self.selected_files.iter().cloned().collect()
+        };
+
+        for path in &files {
+            cmd.arg(path);
+        }
+
+        info!("Running svn commit for {} file(s)", files.len());
+        match cmd.output() {
+            Ok(output) => {
+                if output.status.success() {
+                    info!("svn commit succeeded");
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    error!("svn commit failed: {stderr}");
+                }
+            }
+            Err(e) => error!("Failed to run svn commit: {e}"),
+        }
+
+        self.selected_files.clear();
+        self.commit_message.clear();
+        self.active_window = ActiveWindow::ChangedFiles;
+        self.refresh_status();
+        true
     }
 
     pub fn refresh_working_copy_revision(&mut self) {

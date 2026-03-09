@@ -4,6 +4,7 @@ pub enum ActiveWindow {
     Branches,
     Revisions,
     Diff,
+    Commit,
 }
 
 pub struct SvnFile {

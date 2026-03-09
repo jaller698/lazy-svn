@@ -79,6 +79,29 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
         terminal.draw(|f| ui(f, app));
         if let Event::Key(key) = event::read()? {
             if key.kind == KeyEventKind::Press {
+                // When the commit popup is open, all keystrokes go to the message buffer.
+                if app.active_window == ActiveWindow::Commit {
+                    match key.code {
+                        KeyCode::Esc => {
+                            app.active_window = ActiveWindow::ChangedFiles;
+                            app.commit_message.clear();
+                            log::debug!("Commit cancelled");
+                        }
+                        KeyCode::Enter => {
+                            log::info!("User confirmed commit");
+                            app.do_commit();
+                        }
+                        KeyCode::Backspace => {
+                            app.commit_message.pop();
+                        }
+                        KeyCode::Char(c) => {
+                            app.commit_message.push(c);
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 match key.code {
                     KeyCode::Char('q') => {
                         log::info!("User quit");
@@ -106,6 +129,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                             ActiveWindow::Branches => ActiveWindow::Revisions,
                             ActiveWindow::Revisions => ActiveWindow::Diff,
                             ActiveWindow::Diff => ActiveWindow::ChangedFiles,
+                            ActiveWindow::Commit => ActiveWindow::ChangedFiles,
                         };
                         log::debug!("Switched active window to {:?}", app.active_window);
                     }
@@ -114,12 +138,14 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                         ActiveWindow::Branches => app.next_branch(),
                         ActiveWindow::Revisions => app.next_revision(),
                         ActiveWindow::Diff => app.scroll_diff_down(),
+                        ActiveWindow::Commit => {}
                     },
                     KeyCode::Char('k') => match app.active_window {
                         ActiveWindow::ChangedFiles => app.previous_file(),
                         ActiveWindow::Branches => app.previous_branch(),
                         ActiveWindow::Revisions => app.previous_revision(),
                         ActiveWindow::Diff => app.scroll_diff_up(),
+                        ActiveWindow::Commit => {}
                     },
                     KeyCode::Char('}') => {
                         if app.active_window == ActiveWindow::Diff {
@@ -137,15 +163,29 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                         app.refresh_branches();
                         app.refresh_log();
                     }
+                    // Enter: fold/unfold directory in ChangedFiles; update revision in Revisions.
                     KeyCode::Enter => {
-                        if app.active_window == ActiveWindow::Revisions {
-                            log::info!("Updating working copy to selected revision");
-                            app.update_to_revision();
+                        match app.active_window {
+                            ActiveWindow::ChangedFiles => app.toggle_folder(),
+                            ActiveWindow::Revisions => {
+                                log::info!("Updating working copy to selected revision");
+                                app.update_to_revision();
+                            }
+                            _ => {}
                         }
                     }
+                    // Space: toggle file selection in ChangedFiles (files only).
                     KeyCode::Char(' ') => {
                         if app.active_window == ActiveWindow::ChangedFiles {
-                            app.toggle_folder();
+                            app.toggle_file_selection();
+                        }
+                    }
+                    // 'a': open commit popup from the ChangedFiles panel.
+                    KeyCode::Char('a') => {
+                        if app.active_window == ActiveWindow::ChangedFiles {
+                            app.commit_message.clear();
+                            app.active_window = ActiveWindow::Commit;
+                            log::debug!("Opened commit window");
                         }
                     }
                     _ => {}

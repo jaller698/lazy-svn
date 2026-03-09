@@ -1,12 +1,33 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
 
 use crate::app::App;
 use crate::types::{ActiveWindow, FileTreeNode};
+
+/// Returns a centred rectangle of the given percentage size inside `r`.
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
+}
 
 pub fn ui(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
@@ -43,21 +64,29 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 status,
                 name,
                 depth,
-                ..
+                path,
             } => {
                 let indent = "  ".repeat(*depth);
+                let selected_marker = if app.selected_files.contains(path) {
+                    "✓"
+                } else {
+                    " "
+                };
                 let style = match status.as_str() {
                     "M" => Style::default().fg(Color::Blue),
                     "A" => Style::default().fg(Color::Green),
                     "D" => Style::default().fg(Color::Red),
                     _ => Style::default().fg(Color::White),
                 };
-                ListItem::new(format!("{}{} {}", indent, status, name)).style(style)
+                ListItem::new(format!("{}[{}] {} {}", indent, selected_marker, status, name))
+                    .style(style)
             }
         })
         .collect();
 
-    let border_color = if app.active_window == ActiveWindow::ChangedFiles {
+    let border_color = if app.active_window == ActiveWindow::ChangedFiles
+        || app.active_window == ActiveWindow::Commit
+    {
         Color::Yellow
     } else {
         Color::Gray
@@ -65,7 +94,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let list = List::new(items)
         .block(
             Block::default()
-                .title(" 1: Files (j/k | Space: fold) ")
+                .title(" 1: Files (j/k | Space: select | Enter: fold | a: commit) ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color)),
         )
@@ -183,4 +212,40 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         .scroll((app.diff_scroll, 0));
 
     f.render_widget(diff_paragraph, chunks[1]);
+
+    // Commit popup overlay
+    if app.active_window == ActiveWindow::Commit {
+        let area = centered_rect(60, 30, f.area());
+        f.render_widget(Clear, area);
+
+        let selected_count = app.selected_files.len();
+        let scope_hint = if selected_count == 0 {
+            format!("Committing all {} changed file(s)", app.file_list.len())
+        } else {
+            format!("Committing {} selected file(s)", selected_count)
+        };
+
+        let message_hint = if app.commit_message.trim().is_empty() {
+            "  (message required)"
+        } else {
+            ""
+        };
+
+        // Display the message with a trailing cursor.
+        let display_text = format!(
+            "{}\n\nMessage: {}_{}\n\n[Enter] commit  [Esc] cancel",
+            scope_hint, app.commit_message, message_hint
+        );
+
+        let popup = Paragraph::new(display_text)
+            .block(
+                Block::default()
+                    .title(" Commit ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow)),
+            )
+            .style(Style::default().fg(Color::White));
+
+        f.render_widget(popup, area);
+    }
 }
