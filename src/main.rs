@@ -221,10 +221,15 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                         }
                     }
                     KeyCode::Char('r') => {
-                        log::info!("Refreshing all data");
-                        app.refresh_status();
-                        app.refresh_branches();
-                        app.refresh_log();
+                        if app.active_window == ActiveWindow::ChangedFiles {
+                            app.svn_revert_marked();
+                            log::debug!("Ran svn revert on marked files");
+                        } else {
+                            log::info!("Refreshing all data");
+                            app.refresh_status();
+                            app.refresh_branches();
+                            app.refresh_log();
+                        }
                     }
                     // Enter: fold/unfold directory in ChangedFiles; update revision in Revisions.
                     KeyCode::Enter => match app.active_window {

@@ -355,6 +355,54 @@ impl App {
         self.refresh_status();
     }
 
+    /// Run `svn revert` on the marked files/folders.
+    /// If no files are marked, operates on the currently selected item.
+    /// Refreshes the status afterwards.
+    pub fn svn_revert_marked(&mut self) {
+        let targets: Vec<String> = if self.selected_files.is_empty() {
+            if let Some(i) = self.file_list_state.selected() {
+                match self.visible_items.get(i) {
+                    Some(FileTreeNode::File { path, .. }) => vec![path.clone()],
+                    Some(FileTreeNode::Dir { path, .. }) => {
+                        // `path` always ends with `/` so `starts_with` is an
+                        // exact directory-boundary match.
+                        self.file_list
+                            .iter()
+                            .filter(|f| f.path.starts_with(path.as_str()))
+                            .map(|f| f.path.clone())
+                            .collect()
+                    }
+                    None => vec![],
+                }
+            } else {
+                vec![]
+            }
+        } else {
+            self.selected_files.iter().cloned().collect()
+        };
+
+        if targets.is_empty() {
+            debug!("svn_revert_marked: nothing to revert");
+            return;
+        }
+
+        info!("Running svn revert for {} item(s)", targets.len());
+        let mut cmd = Command::new("svn");
+        cmd.arg("revert").arg("--depth").arg("infinity").args(&targets);
+        match cmd.output() {
+            Ok(output) => {
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    error!("svn revert failed for {:?}: {stderr}", targets);
+                }
+            }
+            Err(e) => error!("Failed to run svn revert: {e}"),
+        }
+
+        self.selected_files.clear();
+        self.refresh_status();
+    }
+
     /// Run `svn add` on the marked files that have unversioned (`?`) status.
     /// If no files are marked, adds all unversioned files in the file list.
     /// Refreshes the status afterwards.

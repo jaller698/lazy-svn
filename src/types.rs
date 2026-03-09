@@ -106,7 +106,7 @@ pub const KEYBINDINGS: &[Keybinding] = &[
     },
     Keybinding {
         key: "r",
-        description: "Refresh all data",
+        description: "Revert marked files (Files panel) / Refresh all data (other panels)",
     },
     Keybinding {
         key: "Enter",
