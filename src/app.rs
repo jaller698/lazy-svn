@@ -286,9 +286,7 @@ impl App {
                         return;
                     }
 
-                    let all_selected = children
-                        .iter()
-                        .all(|p| self.selected_files.contains(p));
+                    let all_selected = children.iter().all(|p| self.selected_files.contains(p));
 
                     if all_selected {
                         for p in &children {
@@ -339,8 +337,10 @@ impl App {
         }
 
         info!("Running svn delete for {} item(s)", targets.len());
+        debug!("svn delete targets: {:?}", targets);
         let mut cmd = Command::new("svn");
-        cmd.arg("delete").args(&targets);
+        cmd.arg("delete").arg("--force").args(&targets);
+        debug!("Running command: {:?}", cmd);
         match cmd.output() {
             Ok(output) => {
                 if !output.status.success() {
@@ -388,7 +388,10 @@ impl App {
 
         info!("Running svn revert for {} item(s)", targets.len());
         let mut cmd = Command::new("svn");
-        cmd.arg("revert").arg("--depth").arg("infinity").args(&targets);
+        cmd.arg("revert")
+            .arg("--depth")
+            .arg("infinity")
+            .args(&targets);
         match cmd.output() {
             Ok(output) => {
                 if !output.status.success() {
