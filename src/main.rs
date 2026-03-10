@@ -164,6 +164,23 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                     continue;
                 }
 
+                // When the confirm-ignore popup is open, only y/n/Esc are active.
+                if app.active_window == ActiveWindow::ConfirmIgnore {
+                    match key.code {
+                        KeyCode::Char('y') => {
+                            log::info!("User confirmed ignore");
+                            app.confirm_ignore();
+                        }
+                        KeyCode::Char('n') | KeyCode::Esc => {
+                            log::debug!("Ignore cancelled");
+                            app.ignore_target = None;
+                            app.active_window = ActiveWindow::ChangedFiles;
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 // When the help window is focused only a few keys are active.
                 if app.active_window == ActiveWindow::Help {
                     match key.code {
@@ -209,6 +226,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                             ActiveWindow::Commit => ActiveWindow::ChangedFiles,
                             ActiveWindow::Help => ActiveWindow::ChangedFiles,
                             ActiveWindow::ConfirmDelete => ActiveWindow::ChangedFiles,
+                            ActiveWindow::ConfirmIgnore => ActiveWindow::ChangedFiles,
                         };
                         log::debug!("Switched active window to {:?}", app.active_window);
                     }
@@ -220,6 +238,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                         ActiveWindow::Commit => {}
                         ActiveWindow::Help => {}
                         ActiveWindow::ConfirmDelete => {}
+                        ActiveWindow::ConfirmIgnore => {}
                     },
                     KeyCode::Char('k') => match app.active_window {
                         ActiveWindow::ChangedFiles => app.previous_file(),
@@ -229,6 +248,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                         ActiveWindow::Commit => {}
                         ActiveWindow::Help => {}
                         ActiveWindow::ConfirmDelete => {}
+                        ActiveWindow::ConfirmIgnore => {}
                     },
                     KeyCode::Char('}') => {
                         if app.active_window == ActiveWindow::Diff {
@@ -293,6 +313,13 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                         if app.active_window == ActiveWindow::ChangedFiles {
                             app.undo_last_delete();
                             log::debug!("Undid last delete");
+                        }
+                    }
+                    // 'i': ignore the currently hovered file.
+                    KeyCode::Char('i') => {
+                        if app.active_window == ActiveWindow::ChangedFiles {
+                            app.ignore_current_file();
+                            log::debug!("Opened ignore confirmation for hovered file");
                         }
                     }
                     _ => {}

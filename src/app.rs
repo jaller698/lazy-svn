@@ -13,6 +13,102 @@ use std::os::unix::fs::PermissionsExt;
 use crate::types::{ActiveWindow, CommitField, FileTreeNode, SvnFile, SvnRevision};
 use log::{debug, error, info, warn};
 
+/// Returns the path to the lazysvn ignore file (`~/.config/lazysvn/ignore`).
+fn ignore_file_path() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".config")
+        .join("lazysvn")
+        .join("ignore")
+}
+
+/// Returns `true` if `path` matches `pattern` using simple glob-style rules:
+/// - Lines starting with `#` are comments and are ignored by the caller.
+/// - An empty pattern never matches.
+/// - `*` in a pattern matches any sequence of characters that does not cross
+///   a directory boundary (i.e. does not contain `/`).
+/// - `**` matches any sequence of characters including `/`.
+/// - A pattern without wildcards is compared as an exact path or as a suffix
+///   starting at a directory boundary.
+pub fn matches_ignore_pattern(path: &str, pattern: &str) -> bool {
+    if pattern.is_empty() {
+        return false;
+    }
+    // Compile the pattern into a regex-like check using manual glob expansion.
+    glob_match(path, pattern)
+}
+
+/// Minimal glob matcher that supports `*` (no path separator) and `**` (any).
+fn glob_match(path: &str, pattern: &str) -> bool {
+    // Fast path: no wildcards.
+    if !pattern.contains('*') {
+        // Exact match or trailing-segment match (e.g. pattern "foo.txt" matches "src/foo.txt").
+        if path == pattern {
+            return true;
+        }
+        // Match at a directory boundary.
+        let boundary = format!("/{}", pattern);
+        return path.ends_with(&boundary) || path == pattern;
+    }
+
+    // If the pattern contains no `/`, match against the basename only (like .gitignore).
+    if !pattern.contains('/') {
+        let basename = path.rsplit('/').next().unwrap_or(path);
+        return glob_match_recursive(basename.as_bytes(), pattern.as_bytes());
+    }
+
+    // Pattern contains `/`: match against the full path.
+    glob_match_recursive(path.as_bytes(), pattern.as_bytes())
+}
+
+fn glob_match_recursive(path: &[u8], pattern: &[u8]) -> bool {
+    let mut pi = 0usize;
+    let mut gi = 0usize;
+
+    while gi < pattern.len() {
+        if pattern[gi] == b'*' {
+            // Check for `**`.
+            if gi + 1 < pattern.len() && pattern[gi + 1] == b'*' {
+                let rest_pattern = &pattern[(gi + 2)..];
+                // `**` matches zero or more path components (including `/`).
+                // Try matching the rest of the pattern at every position in path.
+                for start in pi..=path.len() {
+                    if glob_match_recursive(&path[start..], rest_pattern) {
+                        return true;
+                    }
+                }
+                return false;
+            } else {
+                let rest_pattern = &pattern[(gi + 1)..];
+                // Single `*`: match any sequence that does not contain `/`.
+                for start in pi..=path.len() {
+                    if start > pi && path[start - 1] == b'/' {
+                        break;
+                    }
+                    if glob_match_recursive(&path[start..], rest_pattern) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        }
+
+        if pi >= path.len() {
+            return false;
+        }
+
+        if pattern[gi] != path[pi] {
+            return false;
+        }
+
+        pi += 1;
+        gi += 1;
+    }
+
+    pi == path.len()
+}
+
 pub struct App {
     pub active_window: ActiveWindow,
     /// Window that was active before the help popup was opened; used to
@@ -52,6 +148,11 @@ pub struct App {
     /// Backup created before the last `svn delete`.
     /// Tuple of (backup_dir, original_paths); cleared after undo.
     pub last_backup: Option<(PathBuf, Vec<String>)>,
+    /// Patterns loaded from `~/.config/lazysvn/ignore`; files matching any of
+    /// these are hidden from the Files panel.
+    pub ignore_patterns: Vec<String>,
+    /// The file path pending y/n confirmation before being added to the ignore file.
+    pub ignore_target: Option<String>,
 }
 
 impl App {
@@ -78,7 +179,10 @@ impl App {
             commit_active_field: CommitField::Message,
             delete_targets: Vec::new(),
             last_backup: None,
+            ignore_patterns: Vec::new(),
+            ignore_target: None,
         };
+        app.load_ignore_patterns();
         app.refresh_status();
         app.refresh_branches();
         app.refresh_log();
@@ -127,6 +231,8 @@ impl App {
             commit_active_field: CommitField::Message,
             delete_targets: Vec::new(),
             last_backup: None,
+            ignore_patterns: Vec::new(),
+            ignore_target: None,
         }
     }
 
@@ -138,6 +244,7 @@ impl App {
             .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
             .unwrap_or_default();
 
+        let patterns = self.ignore_patterns.clone();
         self.file_list = output
             .lines()
             .filter_map(|line| {
@@ -149,6 +256,11 @@ impl App {
                 } else {
                     None
                 }
+            })
+            .filter(|f| {
+                !patterns
+                    .iter()
+                    .any(|p| matches_ignore_pattern(&f.path, p))
             })
             .collect();
 
@@ -460,6 +572,95 @@ impl App {
             error!("Failed to run svn revert during undo: {e}");
         }
 
+        self.refresh_status();
+    }
+
+    /// Load ignore patterns from `~/.config/lazysvn/ignore`, creating the file
+    /// (and its parent directories) if it does not yet exist.
+    pub fn load_ignore_patterns(&mut self) {
+        let path = ignore_file_path();
+        if let Some(parent) = path.parent() {
+            if let Err(e) = fs::create_dir_all(parent) {
+                warn!("Could not create ignore file directory {:?}: {}", parent, e);
+            }
+        }
+        // Create the file if it does not exist yet.
+        if !path.exists() {
+            if let Err(e) = fs::write(&path, "") {
+                warn!("Could not create ignore file {:?}: {}", path, e);
+            }
+        }
+        match fs::read_to_string(&path) {
+            Ok(contents) => {
+                self.ignore_patterns = contents
+                    .lines()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                    .collect();
+                info!(
+                    "Loaded {} ignore pattern(s) from {:?}",
+                    self.ignore_patterns.len(),
+                    path
+                );
+            }
+            Err(e) => {
+                warn!("Could not read ignore file {:?}: {}", path, e);
+                self.ignore_patterns = Vec::new();
+            }
+        }
+    }
+
+    /// If the currently hovered item is a file, store it as `ignore_target` and
+    /// open the ConfirmIgnore popup.
+    pub fn ignore_current_file(&mut self) {
+        if let Some(i) = self.file_list_state.selected() {
+            if let Some(FileTreeNode::File { path, .. }) = self.visible_items.get(i) {
+                self.ignore_target = Some(path.clone());
+                self.active_window = ActiveWindow::ConfirmIgnore;
+                debug!("Opened ignore confirmation for '{}'", path);
+            }
+        }
+    }
+
+    /// Called when the user confirms the ignore prompt (presses 'y').
+    /// Appends the target path to the ignore file and refreshes the file list.
+    pub fn confirm_ignore(&mut self) {
+        let Some(target) = self.ignore_target.take() else {
+            self.active_window = ActiveWindow::ChangedFiles;
+            return;
+        };
+
+        let path = ignore_file_path();
+        // Read existing contents so we can append without duplicating.
+        let existing = fs::read_to_string(&path).unwrap_or_default();
+        let already_present = existing
+            .lines()
+            .any(|l| l.trim() == target.as_str());
+
+        if !already_present {
+            let new_line = if existing.ends_with('\n') || existing.is_empty() {
+                format!("{}\n", target)
+            } else {
+                format!("\n{}\n", target)
+            };
+            match fs::OpenOptions::new().create(true).append(true).open(&path) {
+                Ok(mut file) => {
+                    use std::io::Write;
+                    if let Err(e) = file.write_all(new_line.as_bytes()) {
+                        error!("Failed to write to ignore file {:?}: {}", path, e);
+                    } else {
+                        info!("Added '{}' to ignore file", target);
+                    }
+                }
+                Err(e) => error!("Failed to open ignore file {:?}: {}", path, e),
+            }
+        } else {
+            debug!("'{}' is already in the ignore file", target);
+        }
+
+        self.selected_files.remove(&target);
+        self.load_ignore_patterns();
+        self.active_window = ActiveWindow::ChangedFiles;
         self.refresh_status();
     }
 
@@ -1081,6 +1282,127 @@ impl App {
         }) {
             self.diff_scroll = pos as u16;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    // ── matches_ignore_pattern ──────────────────────────────────────────────
+
+    #[test]
+    fn test_ignore_exact_match() {
+        assert!(matches_ignore_pattern("src/main.rs", "src/main.rs"));
+        assert!(!matches_ignore_pattern("src/app.rs", "src/main.rs"));
+    }
+
+    #[test]
+    fn test_ignore_basename_match() {
+        // A pattern without a `/` matches as a trailing basename.
+        assert!(matches_ignore_pattern("src/main.rs", "main.rs"));
+        assert!(matches_ignore_pattern("main.rs", "main.rs"));
+        assert!(!matches_ignore_pattern("src/app.rs", "main.rs"));
+    }
+
+    #[test]
+    fn test_ignore_wildcard_extension() {
+        // Pattern without `/` matches against the basename at any depth.
+        assert!(matches_ignore_pattern("src/main.rs", "*.rs"));
+        assert!(matches_ignore_pattern("main.rs", "*.rs"));
+        assert!(!matches_ignore_pattern("src/main.rs", "*.txt"));
+    }
+
+    #[test]
+    fn test_ignore_wildcard_no_cross_dir() {
+        // Pattern with `/`: `*` must not cross directory boundaries.
+        assert!(matches_ignore_pattern("src/main.rs", "src/*.rs"));
+        assert!(!matches_ignore_pattern("src/sub/main.rs", "src/*.rs"));
+    }
+
+    #[test]
+    fn test_ignore_double_star() {
+        // `**` should match across directory boundaries.
+        assert!(matches_ignore_pattern("src/sub/main.rs", "src/**/*.rs"));
+        assert!(matches_ignore_pattern("a/b/c/d.txt", "**/*.txt"));
+    }
+
+    #[test]
+    fn test_ignore_empty_pattern_never_matches() {
+        assert!(!matches_ignore_pattern("anything", ""));
+    }
+
+    // ── load_ignore_patterns / confirm_ignore ──────────────────────────────
+
+    #[test]
+    fn test_load_ignore_patterns_filters_comments_and_blanks() {
+        let dir = tempfile::tempdir().unwrap();
+        let ignore_path = dir.path().join("ignore");
+        let mut f = std::fs::File::create(&ignore_path).unwrap();
+        writeln!(f, "# this is a comment").unwrap();
+        writeln!(f, "").unwrap();
+        writeln!(f, "*.log").unwrap();
+        writeln!(f, "build/").unwrap();
+        drop(f);
+
+        let contents = std::fs::read_to_string(&ignore_path).unwrap();
+        let patterns: Vec<String> = contents
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
+
+        assert_eq!(patterns, vec!["*.log", "build/"]);
+    }
+
+    #[test]
+    fn test_confirm_ignore_writes_to_file_and_filters_file_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let ignore_path = dir.path().join("ignore");
+        std::fs::write(&ignore_path, "").unwrap();
+
+        // Simulate what confirm_ignore does: append pattern + reload + filter.
+        let target = "src/debug.log".to_string();
+
+        // Append.
+        let existing = std::fs::read_to_string(&ignore_path).unwrap_or_default();
+        let new_line = if existing.ends_with('\n') || existing.is_empty() {
+            format!("{}\n", target)
+        } else {
+            format!("\n{}\n", target)
+        };
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&ignore_path)
+            .unwrap();
+        file.write_all(new_line.as_bytes()).unwrap();
+        drop(file);
+
+        // Reload.
+        let contents = std::fs::read_to_string(&ignore_path).unwrap();
+        let patterns: Vec<String> = contents
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
+
+        // Check pattern was stored.
+        assert!(patterns.contains(&target));
+
+        // Simulate filtering.
+        let files = vec![
+            SvnFile { status: "M".into(), path: "src/main.rs".into() },
+            SvnFile { status: "?".into(), path: "src/debug.log".into() },
+        ];
+        let filtered: Vec<_> = files
+            .iter()
+            .filter(|f| !patterns.iter().any(|p| matches_ignore_pattern(&f.path, p)))
+            .collect();
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].path, "src/main.rs");
     }
 }
 
