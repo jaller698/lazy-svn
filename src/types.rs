@@ -16,6 +16,8 @@ pub enum ActiveWindow {
     Help,
     /// Shown when the user presses 'd'; waits for y/n confirmation.
     ConfirmDelete,
+    /// Shown when the user presses 'i'; waits for y/n confirmation.
+    ConfirmIgnore,
 }
 
 pub struct SvnFile {
@@ -133,5 +135,9 @@ pub const KEYBINDINGS: &[Keybinding] = &[
     Keybinding {
         key: "c",
         description: "Open commit popup (Files panel only)",
+    },
+    Keybinding {
+        key: "i",
+        description: "Ignore hovered file — adds it to ~/.config/lazysvn/ignore (Files panel only, asks for confirmation)",
     },
 ];
