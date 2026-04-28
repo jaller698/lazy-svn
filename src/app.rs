@@ -23,6 +23,18 @@ fn ignore_file_path() -> PathBuf {
         .join("ignore")
 }
 
+/// Returns the path used to persist a commit message draft
+/// (`~/.local/share/lazy-svn/commit_draft.txt`).
+fn draft_path() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".local")
+        .join("share")
+        .join("lazy-svn")
+        .join("commit_draft.txt")
+}
+
 /// Returns `true` if `path` matches `pattern` using simple glob-style rules:
 /// - Lines starting with `#` are comments and are ignored by the caller.
 /// - An empty pattern never matches.
@@ -132,6 +144,9 @@ pub struct App {
     pub repository_url: Option<String>,
     /// Commit message being composed in the commit popup.
     pub commit_message: String,
+    /// Byte offset of the cursor within `commit_message`.
+    /// Always kept at a valid UTF-8 char boundary.
+    pub commit_message_cursor: usize,
     /// Optional SVN username for the commit.
     pub commit_username: String,
     /// Optional SVN password for the commit.
@@ -174,6 +189,7 @@ impl App {
             working_copy_revision: None,
             repository_url: None,
             commit_message: String::new(),
+            commit_message_cursor: 0,
             commit_username: String::new(),
             commit_password: String::new(),
             commit_active_field: CommitField::Message,
@@ -226,6 +242,7 @@ impl App {
             working_copy_revision: None,
             repository_url: None,
             commit_message: String::new(),
+            commit_message_cursor: 0,
             commit_username: String::new(),
             commit_password: String::new(),
             commit_active_field: CommitField::Message,
@@ -760,10 +777,181 @@ impl App {
         self.refresh_status();
     }
 
+    /// Returns the (line_index, column) of the commit message cursor.
+    /// Both values are zero-based and measured in characters (not bytes).
+    pub fn commit_cursor_line_col(&self) -> (usize, usize) {
+        let before = &self.commit_message[..self.commit_message_cursor];
+        let line_idx = before.matches('\n').count();
+        let last_newline = before.rfind('\n').map_or(0, |i| i + 1);
+        let col = before[last_newline..].chars().count();
+        (line_idx, col)
+    }
+
+    /// Insert `c` at the current cursor position and advance the cursor.
+    pub fn commit_message_insert_char(&mut self, c: char) {
+        self.commit_message.insert(self.commit_message_cursor, c);
+        self.commit_message_cursor += c.len_utf8();
+    }
+
+    /// Delete the character immediately before the cursor (backspace).
+    pub fn commit_message_delete_before_cursor(&mut self) {
+        if self.commit_message_cursor == 0 {
+            return;
+        }
+        let before = &self.commit_message[..self.commit_message_cursor];
+        let prev_char_len = before.chars().last().map_or(0, |c| c.len_utf8());
+        let new_cursor = self.commit_message_cursor - prev_char_len;
+        self.commit_message.remove(new_cursor);
+        self.commit_message_cursor = new_cursor;
+    }
+
+    /// Move the commit message cursor one character to the left.
+    pub fn commit_message_move_left(&mut self) {
+        if self.commit_message_cursor == 0 {
+            return;
+        }
+        let before = &self.commit_message[..self.commit_message_cursor];
+        let prev_char_len = before.chars().last().map_or(0, |c| c.len_utf8());
+        self.commit_message_cursor -= prev_char_len;
+    }
+
+    /// Move the commit message cursor one character to the right.
+    pub fn commit_message_move_right(&mut self) {
+        if self.commit_message_cursor >= self.commit_message.len() {
+            return;
+        }
+        let next_char_len = self.commit_message[self.commit_message_cursor..]
+            .chars()
+            .next()
+            .map_or(0, |c| c.len_utf8());
+        self.commit_message_cursor += next_char_len;
+    }
+
+    /// Move the commit message cursor up one line, preserving column.
+    pub fn commit_message_move_up(&mut self) {
+        let (line_idx, col) = self.commit_cursor_line_col();
+        if line_idx == 0 {
+            // Already on the first line; move to start of line.
+            self.commit_message_move_to_line_start();
+            return;
+        }
+        let lines: Vec<&str> = self.commit_message.split('\n').collect();
+        let target_line = lines[line_idx - 1];
+        let target_col = col.min(target_line.chars().count());
+        let start_of_target: usize = lines[..line_idx - 1]
+            .iter()
+            .map(|l| l.len() + 1)
+            .sum();
+        let col_bytes: usize = target_line
+            .chars()
+            .take(target_col)
+            .map(|c| c.len_utf8())
+            .sum();
+        self.commit_message_cursor = start_of_target + col_bytes;
+    }
+
+    /// Move the commit message cursor down one line, preserving column.
+    pub fn commit_message_move_down(&mut self) {
+        let (line_idx, col) = self.commit_cursor_line_col();
+        let lines: Vec<&str> = self.commit_message.split('\n').collect();
+        if line_idx + 1 >= lines.len() {
+            // Already on the last line; move to end of line.
+            self.commit_message_move_to_line_end();
+            return;
+        }
+        let target_line = lines[line_idx + 1];
+        let target_col = col.min(target_line.chars().count());
+        let start_of_target: usize = lines[..line_idx + 1]
+            .iter()
+            .map(|l| l.len() + 1)
+            .sum();
+        let col_bytes: usize = target_line
+            .chars()
+            .take(target_col)
+            .map(|c| c.len_utf8())
+            .sum();
+        self.commit_message_cursor = start_of_target + col_bytes;
+    }
+
+    /// Move the commit message cursor to the start of the current line.
+    pub fn commit_message_move_to_line_start(&mut self) {
+        let before = &self.commit_message[..self.commit_message_cursor];
+        let last_newline = before.rfind('\n').map_or(0, |i| i + 1);
+        self.commit_message_cursor = last_newline;
+    }
+
+    /// Move the commit message cursor to the end of the current line.
+    pub fn commit_message_move_to_line_end(&mut self) {
+        let rest = &self.commit_message[self.commit_message_cursor..];
+        let to_next_newline = rest.find('\n').unwrap_or(rest.len());
+        self.commit_message_cursor += to_next_newline;
+    }
+
+    /// Persist the current commit message to disk as a draft so it survives
+    /// Esc cancellations and commit failures.
+    pub fn save_commit_draft(&self) {
+        self.save_commit_draft_to(&draft_path());
+    }
+
+    fn save_commit_draft_to(&self, path: &Path) {
+        if self.commit_message.is_empty() {
+            self.clear_commit_draft_at(path);
+            return;
+        }
+        if let Some(parent) = path.parent() {
+            if let Err(e) = fs::create_dir_all(parent) {
+                warn!("Could not create draft directory {:?}: {}", parent, e);
+                return;
+            }
+        }
+        if let Err(e) = fs::write(path, &self.commit_message) {
+            warn!("Failed to save commit draft {:?}: {}", path, e);
+        } else {
+            info!("Saved commit draft to {:?}", path);
+        }
+    }
+
+    /// Load a previously saved commit draft from disk into `commit_message`,
+    /// placing the cursor at the end.  Does nothing if no draft exists.
+    pub fn load_commit_draft(&mut self) {
+        self.load_commit_draft_from(&draft_path());
+    }
+
+    fn load_commit_draft_from(&mut self, path: &Path) {
+        if !path.exists() {
+            return;
+        }
+        match fs::read_to_string(path) {
+            Ok(content) if !content.is_empty() => {
+                self.commit_message = content;
+                self.commit_message_cursor = self.commit_message.len();
+                info!("Loaded commit draft from {:?}", path);
+            }
+            Ok(_) => {}
+            Err(e) => warn!("Failed to load commit draft {:?}: {}", path, e),
+        }
+    }
+
+    /// Remove the draft file from disk (called after a successful commit).
+    pub fn clear_commit_draft(&self) {
+        self.clear_commit_draft_at(&draft_path());
+    }
+
+    fn clear_commit_draft_at(&self, path: &Path) {
+        if path.exists() {
+            if let Err(e) = fs::remove_file(path) {
+                warn!("Failed to remove commit draft {:?}: {}", path, e);
+            } else {
+                info!("Removed commit draft {:?}", path);
+            }
+        }
+    }
+
     /// Run `svn commit` with the current `commit_message`.
     /// Commits the explicitly selected files, or all changed files if none are selected.
-    /// Clears the selection and commit message on completion and refreshes state.
-    /// Returns `false` when the commit was not attempted (e.g. empty message).
+    /// Clears the selection and commit message on success; keeps them on failure so the
+    /// user can correct and retry.
+    /// Returns `false` when the commit was not attempted (e.g. empty message) or failed.
     pub fn do_commit(&mut self) -> bool {
         let message = self.commit_message.trim().to_string();
         if message.is_empty() {
@@ -869,26 +1057,40 @@ impl App {
             })
             .collect::<Vec<_>>();
         debug!("svn commit command: {:?}", debug_cmd);
+        let mut commit_succeeded = false;
         match cmd.output() {
             Ok(output) => {
                 if output.status.success() {
                     info!("svn commit succeeded");
+                    commit_succeeded = true;
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     error!("svn commit failed: {stderr}");
+                    // Save draft so the message survives even if the app is closed.
+                    self.save_commit_draft();
                 }
             }
-            Err(e) => error!("Failed to run svn commit: {e}"),
+            Err(e) => {
+                error!("Failed to run svn commit: {e}");
+                self.save_commit_draft();
+            }
         }
 
-        self.selected_files.clear();
-        self.commit_message.clear();
-        self.commit_username.clear();
-        self.commit_password.clear();
-        self.commit_active_field = CommitField::Message;
-        self.active_window = ActiveWindow::ChangedFiles;
-        self.refresh_status();
-        true
+        if commit_succeeded {
+            self.selected_files.clear();
+            self.commit_message.clear();
+            self.commit_message_cursor = 0;
+            self.commit_username.clear();
+            self.commit_password.clear();
+            self.commit_active_field = CommitField::Message;
+            self.active_window = ActiveWindow::ChangedFiles;
+            self.clear_commit_draft();
+            self.refresh_status();
+            true
+        } else {
+            // Leave the popup open so the user can fix the message and retry.
+            false
+        }
     }
 
     pub fn refresh_working_copy_revision(&mut self) {
@@ -1403,6 +1605,201 @@ mod tests {
 
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].path, "src/main.rs");
+    }
+
+    // ── commit message cursor movement ─────────────────────────────────────
+
+    fn make_commit_app(msg: &str, cursor: usize) -> App {
+        let mut app = App::test_new();
+        app.commit_message = msg.to_string();
+        app.commit_message_cursor = cursor;
+        app
+    }
+
+    #[test]
+    fn test_cursor_insert_char_at_start() {
+        let mut app = make_commit_app("bc", 0);
+        app.commit_message_insert_char('a');
+        assert_eq!(app.commit_message, "abc");
+        assert_eq!(app.commit_message_cursor, 1);
+    }
+
+    #[test]
+    fn test_cursor_insert_char_at_end() {
+        let mut app = make_commit_app("ab", 2);
+        app.commit_message_insert_char('c');
+        assert_eq!(app.commit_message, "abc");
+        assert_eq!(app.commit_message_cursor, 3);
+    }
+
+    #[test]
+    fn test_cursor_insert_char_in_middle() {
+        let mut app = make_commit_app("ac", 1);
+        app.commit_message_insert_char('b');
+        assert_eq!(app.commit_message, "abc");
+        assert_eq!(app.commit_message_cursor, 2);
+    }
+
+    #[test]
+    fn test_cursor_delete_before_cursor_basic() {
+        let mut app = make_commit_app("abc", 3);
+        app.commit_message_delete_before_cursor();
+        assert_eq!(app.commit_message, "ab");
+        assert_eq!(app.commit_message_cursor, 2);
+    }
+
+    #[test]
+    fn test_cursor_delete_before_cursor_at_start_noop() {
+        let mut app = make_commit_app("abc", 0);
+        app.commit_message_delete_before_cursor();
+        assert_eq!(app.commit_message, "abc");
+        assert_eq!(app.commit_message_cursor, 0);
+    }
+
+    #[test]
+    fn test_cursor_delete_before_cursor_middle() {
+        let mut app = make_commit_app("abc", 2);
+        app.commit_message_delete_before_cursor();
+        assert_eq!(app.commit_message, "ac");
+        assert_eq!(app.commit_message_cursor, 1);
+    }
+
+    #[test]
+    fn test_cursor_move_left() {
+        let mut app = make_commit_app("hello", 5);
+        app.commit_message_move_left();
+        assert_eq!(app.commit_message_cursor, 4);
+        app.commit_message_move_left();
+        assert_eq!(app.commit_message_cursor, 3);
+    }
+
+    #[test]
+    fn test_cursor_move_left_at_start_noop() {
+        let mut app = make_commit_app("hello", 0);
+        app.commit_message_move_left();
+        assert_eq!(app.commit_message_cursor, 0);
+    }
+
+    #[test]
+    fn test_cursor_move_right() {
+        let mut app = make_commit_app("hello", 0);
+        app.commit_message_move_right();
+        assert_eq!(app.commit_message_cursor, 1);
+    }
+
+    #[test]
+    fn test_cursor_move_right_at_end_noop() {
+        let mut app = make_commit_app("hi", 2);
+        app.commit_message_move_right();
+        assert_eq!(app.commit_message_cursor, 2);
+    }
+
+    #[test]
+    fn test_cursor_line_col_single_line() {
+        let app = make_commit_app("hello", 3);
+        assert_eq!(app.commit_cursor_line_col(), (0, 3));
+    }
+
+    #[test]
+    fn test_cursor_line_col_multiline() {
+        // "line1\nline2" – cursor at byte 7, which is 'i' (the second char of "line2")
+        let msg = "line1\nline2";
+        let app = make_commit_app(msg, 7); // byte 7 = 'i' in "line2", one char after 'l'
+        assert_eq!(app.commit_cursor_line_col(), (1, 1));
+    }
+
+    #[test]
+    fn test_cursor_move_up() {
+        // "abc\nde" – cursor at end of second line (byte 6)
+        let msg = "abc\nde";
+        let mut app = make_commit_app(msg, 6);
+        assert_eq!(app.commit_cursor_line_col(), (1, 2));
+        app.commit_message_move_up();
+        // Should land at col 2 of "abc" → byte 2
+        assert_eq!(app.commit_message_cursor, 2);
+        assert_eq!(app.commit_cursor_line_col(), (0, 2));
+    }
+
+    #[test]
+    fn test_cursor_move_up_clips_to_shorter_line() {
+        // "ab\nlong line" – cursor at end of second line
+        let msg = "ab\nlong line";
+        let mut app = make_commit_app(msg, msg.len());
+        app.commit_message_move_up();
+        // "ab" is only 2 chars, so cursor clips to end of first line
+        assert_eq!(app.commit_cursor_line_col(), (0, 2));
+    }
+
+    #[test]
+    fn test_cursor_move_down() {
+        // "abc\nde" – cursor at byte 1 (col 1 of first line)
+        let msg = "abc\nde";
+        let mut app = make_commit_app(msg, 1);
+        app.commit_message_move_down();
+        // col 1 of "de" → byte 5
+        assert_eq!(app.commit_message_cursor, 5);
+        assert_eq!(app.commit_cursor_line_col(), (1, 1));
+    }
+
+    #[test]
+    fn test_cursor_move_to_line_start() {
+        let msg = "abc\ndef";
+        let mut app = make_commit_app(msg, 7); // end of "def"
+        app.commit_message_move_to_line_start();
+        assert_eq!(app.commit_message_cursor, 4); // start of "def"
+    }
+
+    #[test]
+    fn test_cursor_move_to_line_end() {
+        let msg = "abc\ndef";
+        let mut app = make_commit_app(msg, 4); // start of "def"
+        app.commit_message_move_to_line_end();
+        assert_eq!(app.commit_message_cursor, 7); // end of "def"
+    }
+
+    // ── draft persistence ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_save_and_load_commit_draft() {
+        let tmp = tempfile::tempdir().unwrap();
+        let draft = tmp.path().join("commit_draft.txt");
+
+        let mut app = App::test_new();
+        app.commit_message = "my draft message".to_string();
+        app.commit_message_cursor = app.commit_message.len();
+        app.save_commit_draft_to(&draft);
+
+        // A second app instance should load the draft.
+        let mut app2 = App::test_new();
+        assert!(app2.commit_message.is_empty());
+        app2.load_commit_draft_from(&draft);
+        assert_eq!(app2.commit_message, "my draft message");
+        assert_eq!(app2.commit_message_cursor, "my draft message".len());
+
+        // clear_commit_draft should remove the file.
+        app2.clear_commit_draft_at(&draft);
+        let mut app3 = App::test_new();
+        app3.load_commit_draft_from(&draft);
+        assert!(app3.commit_message.is_empty());
+    }
+
+    #[test]
+    fn test_save_empty_draft_removes_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let draft = tmp.path().join("commit_draft.txt");
+
+        let mut app = App::test_new();
+        app.commit_message = "initial draft".to_string();
+        app.save_commit_draft_to(&draft);
+        assert!(draft.exists());
+
+        // Now clear and save again – should remove the draft file.
+        app.commit_message.clear();
+        app.save_commit_draft_to(&draft);
+
+        let mut app2 = App::test_new();
+        app2.load_commit_draft_from(&draft);
+        assert!(app2.commit_message.is_empty());
     }
 }
 

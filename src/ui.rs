@@ -257,22 +257,40 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         } else {
             inactive_label
         };
+        let is_msg_active = app.commit_active_field == CommitField::Message;
         let mut msg_lines: Vec<Line> = vec![Line::from(Span::styled("Message:", msg_label_style))];
         if app.commit_message.trim().is_empty() {
             msg_lines.push(Line::from(vec![
-                Span::styled(cur(&CommitField::Message), value_style),
+                Span::styled(if is_msg_active { "_" } else { "" }, value_style),
                 Span::styled("  (required)", warn_style),
             ]));
         } else {
-            // Render each line of the multi-line message; append cursor on the last.
+            // Determine cursor position (line, col) for rendering.
+            let (cursor_line, cursor_col) = app.commit_cursor_line_col();
             let raw_lines: Vec<&str> = app.commit_message.split('\n').collect();
             for (i, raw) in raw_lines.iter().enumerate() {
-                let is_last = i + 1 == raw_lines.len();
-                let mut spans = vec![Span::styled(*raw, value_style)];
-                if is_last {
-                    spans.push(Span::styled(cur(&CommitField::Message), value_style));
+                if is_msg_active && i == cursor_line {
+                    // Split this line into before-cursor, cursor-char/marker, after-cursor.
+                    let mut chars = raw.chars();
+                    let before: String = chars.by_ref().take(cursor_col).collect();
+                    // The remaining iterator starts at the cursor position.
+                    let cursor_char = match chars.next() {
+                        Some(c) => c.to_string(),
+                        // Cursor is at end of line – show a block marker.
+                        None => "_".to_string(),
+                    };
+                    let after_cursor: String = chars.collect();
+                    msg_lines.push(Line::from(vec![
+                        Span::styled(before, value_style),
+                        Span::styled(
+                            cursor_char,
+                            Style::default().fg(Color::Black).bg(Color::White),
+                        ),
+                        Span::styled(after_cursor, value_style),
+                    ]));
+                } else {
+                    msg_lines.push(Line::from(Span::styled(*raw, value_style)));
                 }
-                msg_lines.push(Line::from(spans));
             }
         }
 
