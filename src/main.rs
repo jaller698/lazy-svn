@@ -88,8 +88,11 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                 if app.active_window == ActiveWindow::Commit {
                     match key.code {
                         KeyCode::Esc => {
+                            // Save message as draft before discarding it.
+                            app.save_commit_draft();
                             app.active_window = ActiveWindow::ChangedFiles;
                             app.commit_message.clear();
+                            app.commit_message_cursor = 0;
                             app.commit_username.clear();
                             app.commit_password.clear();
                             app.commit_active_field = CommitField::Message;
@@ -102,7 +105,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                         }
                         // Plain Enter: newline in the message field, advance focus in other fields.
                         KeyCode::Enter => match app.commit_active_field {
-                            CommitField::Message => app.commit_message.push('\n'),
+                            CommitField::Message => app.commit_message_insert_char('\n'),
                             CommitField::Username => {
                                 app.commit_active_field = CommitField::Password;
                             }
@@ -128,7 +131,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                         }
                         KeyCode::Backspace => match app.commit_active_field {
                             CommitField::Message => {
-                                app.commit_message.pop();
+                                app.commit_message_delete_before_cursor();
                             }
                             CommitField::Username => {
                                 app.commit_username.pop();
@@ -137,8 +140,39 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                                 app.commit_password.pop();
                             }
                         },
+                        // Arrow keys: move cursor in the message field; ignored in other fields.
+                        KeyCode::Left => {
+                            if app.commit_active_field == CommitField::Message {
+                                app.commit_message_move_left();
+                            }
+                        }
+                        KeyCode::Right => {
+                            if app.commit_active_field == CommitField::Message {
+                                app.commit_message_move_right();
+                            }
+                        }
+                        KeyCode::Up => {
+                            if app.commit_active_field == CommitField::Message {
+                                app.commit_message_move_up();
+                            }
+                        }
+                        KeyCode::Down => {
+                            if app.commit_active_field == CommitField::Message {
+                                app.commit_message_move_down();
+                            }
+                        }
+                        KeyCode::Home => {
+                            if app.commit_active_field == CommitField::Message {
+                                app.commit_message_move_to_line_start();
+                            }
+                        }
+                        KeyCode::End => {
+                            if app.commit_active_field == CommitField::Message {
+                                app.commit_message_move_to_line_end();
+                            }
+                        }
                         KeyCode::Char(c) => match app.commit_active_field {
-                            CommitField::Message => app.commit_message.push(c),
+                            CommitField::Message => app.commit_message_insert_char(c),
                             CommitField::Username => app.commit_username.push(c),
                             CommitField::Password => app.commit_password.push(c),
                         },
@@ -303,7 +337,10 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                     // 'c': open commit popup from the ChangedFiles panel.
                     KeyCode::Char('c') => {
                         if app.active_window == ActiveWindow::ChangedFiles {
-                            app.commit_message.clear();
+                            // Load any previously saved draft into the message field.
+                            if app.commit_message.is_empty() {
+                                app.load_commit_draft();
+                            }
                             app.active_window = ActiveWindow::Commit;
                             log::debug!("Opened commit window");
                         }
