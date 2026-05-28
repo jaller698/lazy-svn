@@ -10,7 +10,7 @@ use std::process::Command;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use crate::types::{ActiveWindow, CommitField, FileTreeNode, SvnFile, SvnRevision};
+use crate::types::{ActiveWindow, CommitField, FileTreeNode, SvnFile, SvnRevision, SvnRevisionFile};
 use log::{debug, error, info, warn};
 
 const REVISION_LOAD_BATCH_SIZE: usize = 50;
@@ -35,6 +35,18 @@ fn draft_path() -> PathBuf {
         .join("share")
         .join("lazy-svn")
         .join("commit_draft.txt")
+}
+
+/// Returns the path used to persist the set of selected files
+/// (`~/.local/share/lazy-svn/selected_files.txt`).
+fn selection_path() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".local")
+        .join("share")
+        .join("lazy-svn")
+        .join("selected_files.txt")
 }
 
 /// Returns `true` if `path` matches `pattern` using simple glob-style rules:
@@ -140,9 +152,16 @@ pub struct App {
     pub branch_list_state: ListState,
     pub current_diff: Vec<Line<'static>>,
     pub diff_scroll: u16,
+    /// The working-copy file path whose diff is currently shown, or `None`
+    /// when the diff shows a revision or nothing.
+    pub current_diff_file: Option<String>,
     pub revision_list: Vec<SvnRevision>,
     pub revision_log_limit: usize,
     pub revision_list_state: ListState,
+    /// Files changed in the currently selected revision (populated by
+    /// `refresh_revision_files()`).
+    pub revision_files: Vec<SvnRevisionFile>,
+    pub revision_file_list_state: ListState,
     pub working_copy_revision: Option<String>,
     pub repository_url: Option<String>,
     /// Commit message being composed in the commit popup.
@@ -187,9 +206,12 @@ impl App {
             branch_list_state: ListState::default(),
             current_diff: vec![String::from("Select a file to see diff").into()],
             diff_scroll: 0,
+            current_diff_file: None,
             revision_list: Vec::new(),
             revision_log_limit: REVISION_LOAD_BATCH_SIZE,
             revision_list_state: ListState::default(),
+            revision_files: Vec::new(),
+            revision_file_list_state: ListState::default(),
             working_copy_revision: None,
             repository_url: None,
             commit_message: String::new(),
@@ -204,6 +226,7 @@ impl App {
         };
         app.load_ignore_patterns();
         app.refresh_status();
+        app.load_selection();
         app.refresh_branches();
         app.refresh_log();
         app
@@ -241,9 +264,12 @@ impl App {
             branch_list_state: ListState::default(),
             current_diff: vec![String::from("Select a file to see diff").into()],
             diff_scroll: 0,
+            current_diff_file: None,
             revision_list: Vec::new(),
             revision_log_limit: REVISION_LOAD_BATCH_SIZE,
             revision_list_state: ListState::default(),
+            revision_files: Vec::new(),
+            revision_file_list_state: ListState::default(),
             working_copy_revision: None,
             repository_url: None,
             commit_message: String::new(),
@@ -448,6 +474,7 @@ impl App {
                 None => {}
             }
         }
+        self.save_selection();
     }
 
     /// Run `svn delete` on the marked files/folders.
@@ -1083,6 +1110,7 @@ impl App {
 
         if commit_succeeded {
             self.selected_files.clear();
+            self.save_selection();
             self.commit_message.clear();
             self.commit_message_cursor = 0;
             self.commit_username.clear();
@@ -1202,6 +1230,7 @@ impl App {
                     warn!("Invalid revision number: {rev_num}");
                     self.current_diff = vec![Line::from("Invalid revision number".to_string())];
                     self.diff_scroll = 0;
+                    self.current_diff_file = None;
                     return;
                 }
                 let mut cmd = Command::new("svn");
@@ -1233,8 +1262,10 @@ impl App {
                 self.current_diff = diff_lines;
 
                 self.diff_scroll = 0;
+                self.current_diff_file = None;
             }
         }
+        self.refresh_revision_files();
     }
 
     pub fn next_revision(&mut self) {
@@ -1312,6 +1343,7 @@ impl App {
 
                 self.current_diff = Self::style_diff_output(&output);
                 self.diff_scroll = 0;
+                self.current_diff_file = Some(path);
             }
         }
     }
