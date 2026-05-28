@@ -13,6 +13,8 @@ use std::os::unix::fs::PermissionsExt;
 use crate::types::{ActiveWindow, CommitField, FileTreeNode, SvnFile, SvnRevision};
 use log::{debug, error, info, warn};
 
+const REVISION_LOAD_BATCH_SIZE: usize = 50;
+
 /// Returns the path to the lazysvn ignore file (`~/.config/lazysvn/ignore`).
 fn ignore_file_path() -> PathBuf {
     std::env::var_os("HOME")
@@ -139,6 +141,7 @@ pub struct App {
     pub current_diff: Vec<Line<'static>>,
     pub diff_scroll: u16,
     pub revision_list: Vec<SvnRevision>,
+    pub revision_log_limit: usize,
     pub revision_list_state: ListState,
     pub working_copy_revision: Option<String>,
     pub repository_url: Option<String>,
@@ -185,6 +188,7 @@ impl App {
             current_diff: vec![String::from("Select a file to see diff").into()],
             diff_scroll: 0,
             revision_list: Vec::new(),
+            revision_log_limit: REVISION_LOAD_BATCH_SIZE,
             revision_list_state: ListState::default(),
             working_copy_revision: None,
             repository_url: None,
@@ -238,6 +242,7 @@ impl App {
             current_diff: vec![String::from("Select a file to see diff").into()],
             diff_scroll: 0,
             revision_list: Vec::new(),
+            revision_log_limit: REVISION_LOAD_BATCH_SIZE,
             revision_list_state: ListState::default(),
             working_copy_revision: None,
             repository_url: None,
@@ -1121,12 +1126,13 @@ impl App {
         // Use -r HEAD:1 so that revisions on the remote that are newer than
         // the working copy are also included in the list.
         debug!("Fetching SVN log");
+        let limit = self.revision_log_limit.to_string();
         let output = Command::new("svn")
             .arg("log")
             .arg("-r")
             .arg("HEAD:1")
             .arg("--limit")
-            .arg("50")
+            .arg(&limit)
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
             .unwrap_or_default();
@@ -1166,6 +1172,21 @@ impl App {
             self.refresh_revision_diff();
         }
         info!("SVN log: {} revision(s) loaded", self.revision_list.len());
+    }
+
+    fn increase_revision_log_limit(&mut self) {
+        self.revision_log_limit = self
+            .revision_log_limit
+            .saturating_add(REVISION_LOAD_BATCH_SIZE);
+    }
+
+    pub fn load_more_revisions(&mut self) {
+        self.increase_revision_log_limit();
+        info!(
+            "Loading more revisions (new limit: {})",
+            self.revision_log_limit
+        );
+        self.refresh_log();
     }
 
     fn revision_number(revision: &str) -> &str {
@@ -1533,6 +1554,14 @@ mod tests {
     #[test]
     fn test_ignore_empty_pattern_never_matches() {
         assert!(!matches_ignore_pattern("anything", ""));
+    }
+
+    #[test]
+    fn test_increase_revision_log_limit_by_batch_size() {
+        let mut app = App::test_new();
+        assert_eq!(app.revision_log_limit, REVISION_LOAD_BATCH_SIZE);
+        app.increase_revision_log_limit();
+        assert_eq!(app.revision_log_limit, REVISION_LOAD_BATCH_SIZE * 2);
     }
 
     // ── load_ignore_patterns / confirm_ignore ──────────────────────────────

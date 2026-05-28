@@ -67,4 +67,5 @@ vim.keymap.set("n", "<leader>sv", "<cmd>LazySVN<cr>", { desc = "Open lazySVN" })
 | `k`   | Move up in file list          |
 | `Tab` | Switch between panels         |
 | `r`   | Refresh SVN status            |
+| `l`   | Load 50 more revisions        |
 | `q`   | Quit                          |

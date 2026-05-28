@@ -113,6 +113,10 @@ pub const KEYBINDINGS: &[Keybinding] = &[
         description: "Revert marked files (Files panel) / Refresh all data (other panels)",
     },
     Keybinding {
+        key: "l",
+        description: "Load 50 more revisions (Revisions panel only)",
+    },
+    Keybinding {
         key: "Enter",
         description: "Update to selected revision (Revisions panel only)",
     },
