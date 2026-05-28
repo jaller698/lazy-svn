@@ -51,6 +51,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         .iter()
         .map(|node| match node {
             FileTreeNode::Dir {
+                path,
                 name,
                 depth,
                 collapsed,
@@ -58,8 +59,19 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             } => {
                 let indent = "  ".repeat(*depth);
                 let icon = if *collapsed { "▶" } else { "▼" };
+                let has_marked_child = app
+                    .selected_files
+                    .iter()
+                    .any(|selected_path| selected_path.starts_with(path.as_str()));
+                let style = if has_marked_child {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::LightBlue)
+                };
                 ListItem::new(format!("{}{} {}/", indent, icon, name))
-                    .style(Style::default().fg(Color::LightBlue))
+                    .style(style)
             }
             FileTreeNode::File {
                 status,
@@ -68,16 +80,23 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 path,
             } => {
                 let indent = "  ".repeat(*depth);
-                let selected_marker = if app.selected_files.contains(path) {
+                let is_marked = app.selected_files.contains(path);
+                let selected_marker = if is_marked {
                     "✓"
                 } else {
                     " "
                 };
-                let style = match status.as_str() {
-                    "M" => Style::default().fg(Color::Blue),
-                    "A" => Style::default().fg(Color::Green),
-                    "D" => Style::default().fg(Color::Red),
-                    _ => Style::default().fg(Color::White),
+                let style = if is_marked {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    match status.as_str() {
+                        "M" => Style::default().fg(Color::Blue),
+                        "A" => Style::default().fg(Color::Green),
+                        "D" => Style::default().fg(Color::Red),
+                        _ => Style::default().fg(Color::White),
+                    }
                 };
                 ListItem::new(format!(
                     "{}[{}] {} {}",
@@ -455,7 +474,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 mod tests {
     use super::*;
     use crate::app::App;
-    use crate::types::KEYBINDINGS;
+    use crate::types::{FileTreeNode, KEYBINDINGS};
     use ratatui::{Terminal, backend::TestBackend};
 
     /// Render the UI with the help window open and collect every cell's symbol into
@@ -491,5 +510,56 @@ mod tests {
                 kb.description
             );
         }
+    }
+
+    fn find_fg_for_substring(
+        buffer: &ratatui::buffer::Buffer,
+        needle: &str,
+    ) -> Option<ratatui::style::Color> {
+        for y in 0..buffer.area().height {
+            let row = (0..buffer.area().width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>();
+            if let Some(idx) = row.find(needle) {
+                return Some(buffer[((idx as u16), y)].fg);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn test_marked_files_and_parents_are_colored() {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::test_new();
+
+        app.visible_items = vec![
+            FileTreeNode::Dir {
+                path: "src/".to_string(),
+                name: "src".to_string(),
+                depth: 0,
+                collapsed: false,
+            },
+            FileTreeNode::Dir {
+                path: "src/lib/".to_string(),
+                name: "lib".to_string(),
+                depth: 1,
+                collapsed: false,
+            },
+            FileTreeNode::File {
+                status: "M".to_string(),
+                path: "src/lib/main.rs".to_string(),
+                name: "main.rs".to_string(),
+                depth: 2,
+            },
+        ];
+        app.selected_files.insert("src/lib/main.rs".to_string());
+
+        terminal.draw(|f| ui(f, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        assert_eq!(find_fg_for_substring(&buffer, "src/"), Some(Color::Yellow));
+        assert_eq!(find_fg_for_substring(&buffer, "lib/"), Some(Color::Yellow));
+        assert_eq!(find_fg_for_substring(&buffer, "main.rs"), Some(Color::Yellow));
     }
 }
