@@ -1830,6 +1830,664 @@ mod tests {
         app2.load_commit_draft_from(&draft);
         assert!(app2.commit_message.is_empty());
     }
+
+    // ── open_help / close_help ───────────────────────────────────────────────
+
+    #[test]
+    fn test_open_help_saves_prev_window_and_switches_to_help() {
+        let mut app = App::test_new();
+        app.active_window = ActiveWindow::Branches;
+        app.open_help();
+        assert_eq!(app.active_window, ActiveWindow::Help);
+        assert_eq!(app.prev_window, Some(ActiveWindow::Branches));
+    }
+
+    #[test]
+    fn test_close_help_restores_prev_window() {
+        let mut app = App::test_new();
+        app.active_window = ActiveWindow::Revisions;
+        app.open_help();
+        app.close_help();
+        assert_eq!(app.active_window, ActiveWindow::Revisions);
+        assert_eq!(app.prev_window, None);
+    }
+
+    #[test]
+    fn test_close_help_without_prev_window_defaults_to_changed_files() {
+        let mut app = App::test_new();
+        app.active_window = ActiveWindow::Help;
+        app.prev_window = None;
+        app.close_help();
+        assert_eq!(app.active_window, ActiveWindow::ChangedFiles);
+    }
+
+    // ── build_tree_for_prefix / rebuild_visible_items ────────────────────────
+
+    fn svn_file(status: &str, path: &str) -> SvnFile {
+        SvnFile {
+            status: status.to_string(),
+            path: path.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_build_tree_flat_files_no_dirs() {
+        let files = vec![svn_file("A", "b.rs"), svn_file("M", "a.rs")];
+        let collapsed = HashSet::new();
+        let mut result = Vec::new();
+        App::build_tree_for_prefix("", 0, &files, &collapsed, &mut result);
+        // No subdirectories; both entries are files, sorted by path.
+        assert_eq!(result.len(), 2);
+        assert!(matches!(result[0], FileTreeNode::File { .. }));
+        assert!(matches!(result[1], FileTreeNode::File { .. }));
+        if let FileTreeNode::File { path, .. } = &result[0] {
+            assert_eq!(path, "a.rs");
+        }
+        if let FileTreeNode::File { path, .. } = &result[1] {
+            assert_eq!(path, "b.rs");
+        }
+    }
+
+    #[test]
+    fn test_build_tree_dirs_emitted_before_files_at_same_level() {
+        let files = vec![svn_file("M", "src/main.rs"), svn_file("A", "root.rs")];
+        let collapsed = HashSet::new();
+        let mut result = Vec::new();
+        App::build_tree_for_prefix("", 0, &files, &collapsed, &mut result);
+        // src/ dir first, then src/main.rs (child), then root.rs at top level.
+        assert_eq!(result.len(), 3);
+        assert!(matches!(result[0], FileTreeNode::Dir { .. }));
+        assert!(matches!(result[1], FileTreeNode::File { .. }));
+        assert!(matches!(result[2], FileTreeNode::File { .. }));
+        if let FileTreeNode::File { path, .. } = &result[2] {
+            assert_eq!(path, "root.rs");
+        }
+    }
+
+    #[test]
+    fn test_build_tree_collapsed_dir_hides_children() {
+        let files = vec![svn_file("M", "src/main.rs"), svn_file("A", "src/lib.rs")];
+        let mut collapsed = HashSet::new();
+        collapsed.insert("src/".to_string());
+        let mut result = Vec::new();
+        App::build_tree_for_prefix("", 0, &files, &collapsed, &mut result);
+        // Only the dir row is visible; its children are suppressed.
+        assert_eq!(result.len(), 1);
+        if let FileTreeNode::Dir { collapsed, path, .. } = &result[0] {
+            assert!(collapsed, "dir should be marked collapsed");
+            assert_eq!(path, "src/");
+        } else {
+            panic!("expected Dir node");
+        }
+    }
+
+    #[test]
+    fn test_build_tree_nested_dirs_have_correct_depth() {
+        let files = vec![svn_file("M", "a/b/c.rs")];
+        let collapsed = HashSet::new();
+        let mut result = Vec::new();
+        App::build_tree_for_prefix("", 0, &files, &collapsed, &mut result);
+        // a/ (depth 0) → a/b/ (depth 1) → a/b/c.rs (depth 2)
+        assert_eq!(result.len(), 3);
+        if let FileTreeNode::Dir { depth, path, .. } = &result[0] {
+            assert_eq!(*depth, 0);
+            assert_eq!(path, "a/");
+        } else {
+            panic!("expected Dir");
+        }
+        if let FileTreeNode::Dir { depth, path, .. } = &result[1] {
+            assert_eq!(*depth, 1);
+            assert_eq!(path, "a/b/");
+        } else {
+            panic!("expected Dir");
+        }
+        if let FileTreeNode::File { depth, path, .. } = &result[2] {
+            assert_eq!(*depth, 2);
+            assert_eq!(path, "a/b/c.rs");
+        } else {
+            panic!("expected File");
+        }
+    }
+
+    // ── toggle_folder ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_toggle_folder_collapses_then_expands() {
+        let mut app = App::test_new();
+        app.file_list = vec![svn_file("M", "src/main.rs"), svn_file("A", "src/lib.rs")];
+        app.rebuild_visible_items();
+        // Initially expanded: dir row + 2 file rows.
+        assert_eq!(app.visible_items.len(), 3);
+        // Select the directory row (index 0).
+        app.file_list_state.select(Some(0));
+
+        app.toggle_folder();
+        // After collapse only the directory row remains visible.
+        assert_eq!(app.visible_items.len(), 1);
+
+        app.toggle_folder();
+        // After re-expand all three rows are visible again.
+        assert_eq!(app.visible_items.len(), 3);
+    }
+
+    #[test]
+    fn test_toggle_folder_on_file_row_does_nothing() {
+        let mut app = App::test_new();
+        app.file_list = vec![svn_file("M", "main.rs")];
+        app.rebuild_visible_items();
+        app.file_list_state.select(Some(0));
+        // index 0 is a File, not a Dir.
+        app.toggle_folder();
+        assert_eq!(app.visible_items.len(), 1);
+    }
+
+    // ── toggle_file_selection ────────────────────────────────────────────────
+
+    #[test]
+    fn test_toggle_file_selection_single_file_toggles() {
+        let mut app = App::test_new();
+        app.file_list = vec![svn_file("M", "main.rs")];
+        app.rebuild_visible_items();
+        app.file_list_state.select(Some(0));
+
+        app.toggle_file_selection();
+        assert!(app.selected_files.contains("main.rs"));
+
+        app.toggle_file_selection();
+        assert!(!app.selected_files.contains("main.rs"));
+    }
+
+    #[test]
+    fn test_toggle_file_selection_directory_selects_all_children() {
+        let mut app = App::test_new();
+        app.file_list = vec![svn_file("M", "src/a.rs"), svn_file("A", "src/b.rs")];
+        app.rebuild_visible_items();
+        // Index 0 is the `src/` directory row.
+        app.file_list_state.select(Some(0));
+
+        app.toggle_file_selection();
+        assert!(app.selected_files.contains("src/a.rs"));
+        assert!(app.selected_files.contains("src/b.rs"));
+
+        // Second toggle deselects all children.
+        app.toggle_file_selection();
+        assert!(!app.selected_files.contains("src/a.rs"));
+        assert!(!app.selected_files.contains("src/b.rs"));
+    }
+
+    // ── svn_delete_marked ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_svn_delete_marked_no_selection_uses_hovered_file() {
+        let mut app = App::test_new();
+        app.file_list = vec![svn_file("M", "foo.rs")];
+        app.rebuild_visible_items();
+        app.file_list_state.select(Some(0));
+
+        app.svn_delete_marked();
+        assert_eq!(app.active_window, ActiveWindow::ConfirmDelete);
+        assert_eq!(app.delete_targets, vec!["foo.rs".to_string()]);
+    }
+
+    #[test]
+    fn test_svn_delete_marked_with_selected_files() {
+        let mut app = App::test_new();
+        app.file_list = vec![svn_file("M", "a.rs"), svn_file("M", "b.rs")];
+        app.rebuild_visible_items();
+        app.selected_files.insert("a.rs".to_string());
+        app.selected_files.insert("b.rs".to_string());
+
+        app.svn_delete_marked();
+        assert_eq!(app.active_window, ActiveWindow::ConfirmDelete);
+        let mut targets = app.delete_targets.clone();
+        targets.sort();
+        assert_eq!(targets, vec!["a.rs".to_string(), "b.rs".to_string()]);
+    }
+
+    #[test]
+    fn test_svn_delete_marked_no_items_does_nothing() {
+        let mut app = App::test_new();
+        // No file_list, no selected_files, no selection.
+        app.svn_delete_marked();
+        assert_eq!(app.active_window, ActiveWindow::ChangedFiles);
+        assert!(app.delete_targets.is_empty());
+    }
+
+    // ── ignore_current_file ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_ignore_current_file_sets_target_and_opens_confirm() {
+        let mut app = App::test_new();
+        app.file_list = vec![svn_file("?", "debug.log")];
+        app.rebuild_visible_items();
+        app.file_list_state.select(Some(0));
+
+        app.ignore_current_file();
+        assert_eq!(app.active_window, ActiveWindow::ConfirmIgnore);
+        assert_eq!(app.ignore_target, Some("debug.log".to_string()));
+    }
+
+    #[test]
+    fn test_ignore_current_file_on_dir_does_nothing() {
+        let mut app = App::test_new();
+        app.file_list = vec![svn_file("?", "src/debug.log")];
+        app.rebuild_visible_items();
+        // Index 0 is the `src/` directory row.
+        app.file_list_state.select(Some(0));
+
+        app.ignore_current_file();
+        assert_eq!(app.active_window, ActiveWindow::ChangedFiles);
+        assert!(app.ignore_target.is_none());
+    }
+
+    #[test]
+    fn test_ignore_current_file_no_selection_does_nothing() {
+        let mut app = App::test_new();
+        app.ignore_current_file();
+        assert_eq!(app.active_window, ActiveWindow::ChangedFiles);
+        assert!(app.ignore_target.is_none());
+    }
+
+    // ── next_branch / previous_branch ────────────────────────────────────────
+
+    #[test]
+    fn test_next_branch_advances_selection() {
+        let mut app = App::test_new();
+        app.branch_list = vec!["main".into(), "dev".into(), "feature".into()];
+        app.branch_list_state.select(Some(0));
+
+        app.next_branch();
+        assert_eq!(app.branch_list_state.selected(), Some(1));
+        app.next_branch();
+        assert_eq!(app.branch_list_state.selected(), Some(2));
+    }
+
+    #[test]
+    fn test_next_branch_wraps_around() {
+        let mut app = App::test_new();
+        app.branch_list = vec!["a".into(), "b".into()];
+        app.branch_list_state.select(Some(1));
+
+        app.next_branch();
+        assert_eq!(app.branch_list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn test_previous_branch_retreats_selection() {
+        let mut app = App::test_new();
+        app.branch_list = vec!["main".into(), "dev".into()];
+        app.branch_list_state.select(Some(1));
+
+        app.previous_branch();
+        assert_eq!(app.branch_list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn test_previous_branch_wraps_around() {
+        let mut app = App::test_new();
+        app.branch_list = vec!["a".into(), "b".into(), "c".into()];
+        app.branch_list_state.select(Some(0));
+
+        app.previous_branch();
+        assert_eq!(app.branch_list_state.selected(), Some(2));
+    }
+
+    // ── next_revision / previous_revision ────────────────────────────────────
+
+    fn make_revision(rev: &str) -> SvnRevision {
+        SvnRevision {
+            revision: rev.to_string(),
+            author: "author".into(),
+            date: "2024-01-01".into(),
+            message: "msg".into(),
+        }
+    }
+
+    #[test]
+    fn test_next_revision_advances_selection() {
+        let mut app = App::test_new();
+        app.revision_list = vec![
+            make_revision("r1"),
+            make_revision("r2"),
+            make_revision("r3"),
+        ];
+        app.revision_list_state.select(Some(0));
+
+        app.next_revision();
+        assert_eq!(app.revision_list_state.selected(), Some(1));
+    }
+
+    #[test]
+    fn test_next_revision_wraps_around() {
+        let mut app = App::test_new();
+        app.revision_list = vec![make_revision("r1"), make_revision("r2")];
+        app.revision_list_state.select(Some(1));
+
+        app.next_revision();
+        assert_eq!(app.revision_list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn test_previous_revision_retreats_selection() {
+        let mut app = App::test_new();
+        app.revision_list = vec![make_revision("r1"), make_revision("r2")];
+        app.revision_list_state.select(Some(1));
+
+        app.previous_revision();
+        assert_eq!(app.revision_list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn test_previous_revision_wraps_around() {
+        let mut app = App::test_new();
+        app.revision_list = vec![
+            make_revision("r1"),
+            make_revision("r2"),
+            make_revision("r3"),
+        ];
+        app.revision_list_state.select(Some(0));
+
+        app.previous_revision();
+        assert_eq!(app.revision_list_state.selected(), Some(2));
+    }
+
+    #[test]
+    fn test_revision_navigation_empty_list_does_not_panic() {
+        let mut app = App::test_new();
+        app.next_revision();
+        app.previous_revision();
+        assert_eq!(app.revision_list_state.selected(), None);
+    }
+
+    // ── next_file / previous_file ─────────────────────────────────────────────
+
+    #[test]
+    fn test_next_file_advances_selection() {
+        let mut app = App::test_new();
+        app.file_list = vec![svn_file("M", "a.rs"), svn_file("A", "b.rs")];
+        app.rebuild_visible_items();
+        app.file_list_state.select(Some(0));
+
+        app.next_file();
+        assert_eq!(app.file_list_state.selected(), Some(1));
+    }
+
+    #[test]
+    fn test_next_file_wraps_around() {
+        let mut app = App::test_new();
+        app.file_list = vec![svn_file("M", "a.rs"), svn_file("M", "b.rs")];
+        app.rebuild_visible_items();
+        app.file_list_state.select(Some(1));
+
+        app.next_file();
+        assert_eq!(app.file_list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn test_previous_file_wraps_around() {
+        let mut app = App::test_new();
+        app.file_list = vec![svn_file("M", "a.rs"), svn_file("M", "b.rs")];
+        app.rebuild_visible_items();
+        app.file_list_state.select(Some(0));
+
+        app.previous_file();
+        assert_eq!(app.file_list_state.selected(), Some(1));
+    }
+
+    // ── scroll_diff_down / scroll_diff_up ─────────────────────────────────────
+
+    #[test]
+    fn test_scroll_diff_down_increments() {
+        let mut app = App::test_new();
+        app.current_diff = vec![
+            Line::from("a"),
+            Line::from("b"),
+            Line::from("c"),
+        ];
+        app.diff_scroll = 0;
+
+        app.scroll_diff_down();
+        assert_eq!(app.diff_scroll, 1);
+        app.scroll_diff_down();
+        assert_eq!(app.diff_scroll, 2);
+    }
+
+    #[test]
+    fn test_scroll_diff_down_caps_at_max() {
+        let mut app = App::test_new();
+        // Two lines → max scroll = len - 1 = 1.
+        app.current_diff = vec![Line::from("a"), Line::from("b")];
+        app.diff_scroll = 1;
+
+        app.scroll_diff_down();
+        assert_eq!(app.diff_scroll, 1);
+    }
+
+    #[test]
+    fn test_scroll_diff_up_decrements() {
+        let mut app = App::test_new();
+        app.diff_scroll = 3;
+
+        app.scroll_diff_up();
+        assert_eq!(app.diff_scroll, 2);
+    }
+
+    #[test]
+    fn test_scroll_diff_up_clamps_at_zero() {
+        let mut app = App::test_new();
+        app.diff_scroll = 0;
+
+        app.scroll_diff_up();
+        assert_eq!(app.diff_scroll, 0);
+    }
+
+    // ── scroll_diff_next_hunk / scroll_diff_prev_hunk ─────────────────────────
+
+    fn diff_with_hunks() -> Vec<Line<'static>> {
+        vec![
+            Line::from("context line"),
+            Line::from(Span::styled(
+                "@@ -1,3 +1,3 @@",
+                Style::default().fg(Color::Cyan),
+            )),
+            Line::from("+added"),
+            Line::from(Span::styled(
+                "@@ -10,3 +10,3 @@",
+                Style::default().fg(Color::Cyan),
+            )),
+            Line::from("-removed"),
+        ]
+    }
+
+    #[test]
+    fn test_scroll_diff_next_hunk_jumps_forward() {
+        let mut app = App::test_new();
+        app.current_diff = diff_with_hunks();
+        app.diff_scroll = 0;
+
+        app.scroll_diff_next_hunk();
+        assert_eq!(app.diff_scroll, 1); // first `@@` is at index 1
+
+        app.scroll_diff_next_hunk();
+        assert_eq!(app.diff_scroll, 3); // second `@@` is at index 3
+    }
+
+    #[test]
+    fn test_scroll_diff_prev_hunk_jumps_backward() {
+        let mut app = App::test_new();
+        app.current_diff = diff_with_hunks();
+        app.diff_scroll = 4;
+
+        app.scroll_diff_prev_hunk();
+        assert_eq!(app.diff_scroll, 3); // second `@@` at index 3
+
+        app.scroll_diff_prev_hunk();
+        assert_eq!(app.diff_scroll, 1); // first `@@` at index 1
+    }
+
+    // ── style_diff_output ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_style_diff_output_added_lines_green_triple_plus_unchanged() {
+        let output = "+added line\n+++not a change\ncontext";
+        let lines = App::style_diff_output(output);
+        // Line starting with `+` (not `+++`) → green foreground.
+        assert!(lines[0]
+            .spans
+            .iter()
+            .any(|s| s.style.fg == Some(Color::Green)));
+        // Line starting with `+++` → no green foreground.
+        assert!(lines[1]
+            .spans
+            .iter()
+            .all(|s| s.style.fg != Some(Color::Green)));
+        // Plain context line → no foreground colour.
+        assert!(lines[2].spans.iter().all(|s| s.style.fg.is_none()));
+    }
+
+    #[test]
+    fn test_style_diff_output_removed_lines_red_triple_minus_unchanged() {
+        let output = "-removed\n---not a removal\ncontext";
+        let lines = App::style_diff_output(output);
+        // `-` lines are red.
+        assert!(lines[0]
+            .spans
+            .iter()
+            .any(|s| s.style.fg == Some(Color::Red)));
+        // `---` lines have no red foreground.
+        assert!(lines[1]
+            .spans
+            .iter()
+            .all(|s| s.style.fg != Some(Color::Red)));
+    }
+
+    #[test]
+    fn test_style_diff_output_hunk_headers_cyan() {
+        let output = "@@ -1,3 +1,3 @@\ncontext";
+        let lines = App::style_diff_output(output);
+        // `@@` lines are cyan.
+        assert!(lines[0]
+            .spans
+            .iter()
+            .any(|s| s.style.fg == Some(Color::Cyan)));
+        // Context lines have no foreground colour.
+        assert!(lines[1].spans.iter().all(|s| s.style.fg.is_none()));
+    }
+
+    // ── revision_number ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_revision_number_strips_leading_r() {
+        assert_eq!(App::revision_number("r42"), "42");
+        assert_eq!(App::revision_number("r1234"), "1234");
+    }
+
+    #[test]
+    fn test_revision_number_no_leading_r_unchanged() {
+        assert_eq!(App::revision_number("42"), "42");
+        assert_eq!(App::revision_number("HEAD"), "HEAD");
+    }
+
+    // ── do_commit early exits ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_do_commit_empty_message_returns_false() {
+        let mut app = App::test_new();
+        app.commit_message = "   ".to_string(); // only whitespace
+        app.file_list = vec![svn_file("M", "foo.rs")];
+        assert!(!app.do_commit());
+    }
+
+    #[test]
+    fn test_do_commit_no_files_returns_false() {
+        let mut app = App::test_new();
+        app.commit_message = "fix: something".to_string();
+        // file_list and selected_files are both empty.
+        assert!(!app.do_commit());
+    }
+
+    // ── glob_match edge cases ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_ignore_double_star_alone_matches_any_basename() {
+        // `**` without a `/` is treated as basename-only matching.
+        assert!(matches_ignore_pattern("a/b/c.rs", "**"));
+        assert!(matches_ignore_pattern("file.rs", "**"));
+    }
+
+    #[test]
+    fn test_ignore_double_star_prefix_matches_at_any_depth() {
+        // `**/foo.txt` matches `something/foo.txt` and deeper paths.
+        assert!(matches_ignore_pattern("a/foo.txt", "**/foo.txt"));
+        assert!(matches_ignore_pattern("a/b/foo.txt", "**/foo.txt"));
+        assert!(!matches_ignore_pattern("a/bar.txt", "**/foo.txt"));
+    }
+
+    #[test]
+    fn test_ignore_basename_only_does_not_match_mid_component() {
+        // Pattern `bar.txt` must match at a directory boundary, not mid-component.
+        assert!(matches_ignore_pattern("foo/bar.txt", "bar.txt"));
+        assert!(!matches_ignore_pattern("foobar.txt", "bar.txt"));
+    }
+
+    // ── commit message Unicode and edge cases ─────────────────────────────────
+
+    #[test]
+    fn test_cursor_insert_multibyte_char() {
+        // 'ñ' is 2 bytes in UTF-8.
+        let mut app = make_commit_app("bc", 0);
+        app.commit_message_insert_char('ñ');
+        assert_eq!(app.commit_message, "ñbc");
+        assert_eq!(app.commit_message_cursor, 'ñ'.len_utf8());
+    }
+
+    #[test]
+    fn test_cursor_delete_multibyte_char() {
+        let cursor = 'ñ'.len_utf8(); // 2 bytes
+        let mut app = make_commit_app("ñbc", cursor);
+        app.commit_message_delete_before_cursor();
+        assert_eq!(app.commit_message, "bc");
+        assert_eq!(app.commit_message_cursor, 0);
+    }
+
+    #[test]
+    fn test_cursor_move_left_multibyte_char() {
+        let cursor = 'ñ'.len_utf8();
+        let mut app = make_commit_app("ñ", cursor);
+        app.commit_message_move_left();
+        assert_eq!(app.commit_message_cursor, 0);
+    }
+
+    #[test]
+    fn test_cursor_move_right_multibyte_char() {
+        let mut app = make_commit_app("ñbc", 0);
+        app.commit_message_move_right();
+        assert_eq!(app.commit_message_cursor, 'ñ'.len_utf8());
+    }
+
+    #[test]
+    fn test_cursor_line_col_empty_message() {
+        let app = make_commit_app("", 0);
+        assert_eq!(app.commit_cursor_line_col(), (0, 0));
+    }
+
+    #[test]
+    fn test_cursor_move_down_on_last_line_goes_to_line_end() {
+        let msg = "abc\ndef";
+        // Cursor at 'd' (byte 5, inside the last line "def").
+        let mut app = make_commit_app(msg, 5);
+        app.commit_message_move_down();
+        // Already on last line → cursor moves to end of "def".
+        assert_eq!(app.commit_message_cursor, msg.len());
+    }
+
+    #[test]
+    fn test_cursor_move_up_on_first_line_goes_to_line_start() {
+        let mut app = make_commit_app("abc", 2);
+        app.commit_message_move_up();
+        // Already on first line → cursor moves to start of line.
+        assert_eq!(app.commit_message_cursor, 0);
+    }
 }
 
 impl Default for App {
