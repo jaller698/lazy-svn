@@ -255,7 +255,8 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                         app.active_window = match app.active_window {
                             ActiveWindow::ChangedFiles => ActiveWindow::Branches,
                             ActiveWindow::Branches => ActiveWindow::Revisions,
-                            ActiveWindow::Revisions => ActiveWindow::Diff,
+                            ActiveWindow::Revisions => ActiveWindow::RevisionFiles,
+                            ActiveWindow::RevisionFiles => ActiveWindow::Diff,
                             ActiveWindow::Diff => ActiveWindow::ChangedFiles,
                             ActiveWindow::Commit => ActiveWindow::ChangedFiles,
                             ActiveWindow::Help => ActiveWindow::ChangedFiles,
@@ -268,6 +269,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                         ActiveWindow::ChangedFiles => app.next_file(),
                         ActiveWindow::Branches => app.next_branch(),
                         ActiveWindow::Revisions => app.next_revision(),
+                        ActiveWindow::RevisionFiles => app.next_revision_file(),
                         ActiveWindow::Diff => app.scroll_diff_down(),
                         ActiveWindow::Commit => {}
                         ActiveWindow::Help => {}
@@ -278,6 +280,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                         ActiveWindow::ChangedFiles => app.previous_file(),
                         ActiveWindow::Branches => app.previous_branch(),
                         ActiveWindow::Revisions => app.previous_revision(),
+                        ActiveWindow::RevisionFiles => app.previous_revision_file(),
                         ActiveWindow::Diff => app.scroll_diff_up(),
                         ActiveWindow::Commit => {}
                         ActiveWindow::Help => {}
@@ -310,12 +313,28 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                             app.load_more_revisions();
                         }
                     }
+                    KeyCode::Char('f') => {
+                        if app.active_window == ActiveWindow::Revisions {
+                            app.refresh_revision_files();
+                            app.active_window = ActiveWindow::RevisionFiles;
+                            app.refresh_revision_file_diff();
+                        }
+                    }
+                    KeyCode::Esc => {
+                        if app.active_window == ActiveWindow::RevisionFiles {
+                            app.active_window = ActiveWindow::Revisions;
+                        }
+                    }
                     // Enter: fold/unfold directory in ChangedFiles; update revision in Revisions.
                     KeyCode::Enter => match app.active_window {
                         ActiveWindow::ChangedFiles => app.toggle_folder(),
                         ActiveWindow::Revisions => {
                             log::info!("Updating working copy to selected revision");
                             app.update_to_revision();
+                        }
+                        ActiveWindow::RevisionFiles => {
+                            app.refresh_revision_file_diff();
+                            app.active_window = ActiveWindow::Diff;
                         }
                         _ => {}
                     },

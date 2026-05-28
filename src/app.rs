@@ -10,7 +10,7 @@ use std::process::Command;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use crate::types::{ActiveWindow, CommitField, FileTreeNode, SvnFile, SvnRevision};
+use crate::types::{ActiveWindow, CommitField, FileTreeNode, SvnFile, SvnRevision, SvnRevisionFile};
 use log::{debug, error, info, warn};
 
 const REVISION_LOAD_BATCH_SIZE: usize = 50;
@@ -35,6 +35,18 @@ fn draft_path() -> PathBuf {
         .join("share")
         .join("lazy-svn")
         .join("commit_draft.txt")
+}
+
+/// Returns the path used to persist the set of selected files
+/// (`~/.local/share/lazy-svn/selected_files.txt`).
+fn selection_path() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".local")
+        .join("share")
+        .join("lazy-svn")
+        .join("selected_files.txt")
 }
 
 /// Returns `true` if `path` matches `pattern` using simple glob-style rules:
@@ -140,9 +152,16 @@ pub struct App {
     pub branch_list_state: ListState,
     pub current_diff: Vec<Line<'static>>,
     pub diff_scroll: u16,
+    /// The working-copy file path whose diff is currently shown, or `None`
+    /// when the diff shows a revision or nothing.
+    pub current_diff_file: Option<String>,
     pub revision_list: Vec<SvnRevision>,
     pub revision_log_limit: usize,
     pub revision_list_state: ListState,
+    /// Files changed in the currently selected revision (populated by
+    /// `refresh_revision_files()`).
+    pub revision_files: Vec<SvnRevisionFile>,
+    pub revision_file_list_state: ListState,
     pub working_copy_revision: Option<String>,
     pub repository_url: Option<String>,
     /// Commit message being composed in the commit popup.
@@ -187,9 +206,12 @@ impl App {
             branch_list_state: ListState::default(),
             current_diff: vec![String::from("Select a file to see diff").into()],
             diff_scroll: 0,
+            current_diff_file: None,
             revision_list: Vec::new(),
             revision_log_limit: REVISION_LOAD_BATCH_SIZE,
             revision_list_state: ListState::default(),
+            revision_files: Vec::new(),
+            revision_file_list_state: ListState::default(),
             working_copy_revision: None,
             repository_url: None,
             commit_message: String::new(),
@@ -204,6 +226,7 @@ impl App {
         };
         app.load_ignore_patterns();
         app.refresh_status();
+        app.load_selection();
         app.refresh_branches();
         app.refresh_log();
         app
@@ -241,9 +264,12 @@ impl App {
             branch_list_state: ListState::default(),
             current_diff: vec![String::from("Select a file to see diff").into()],
             diff_scroll: 0,
+            current_diff_file: None,
             revision_list: Vec::new(),
             revision_log_limit: REVISION_LOAD_BATCH_SIZE,
             revision_list_state: ListState::default(),
+            revision_files: Vec::new(),
+            revision_file_list_state: ListState::default(),
             working_copy_revision: None,
             repository_url: None,
             commit_message: String::new(),
@@ -448,6 +474,7 @@ impl App {
                 None => {}
             }
         }
+        self.save_selection();
     }
 
     /// Run `svn delete` on the marked files/folders.
@@ -548,6 +575,7 @@ impl App {
 
         self.last_backup = Some((backup_dir, targets));
         self.selected_files.clear();
+        self.save_selection();
         self.active_window = ActiveWindow::ChangedFiles;
         self.refresh_status();
     }
@@ -681,6 +709,7 @@ impl App {
         }
 
         self.selected_files.remove(&target);
+        self.save_selection();
         self.load_ignore_patterns();
         self.active_window = ActiveWindow::ChangedFiles;
         self.refresh_status();
@@ -734,6 +763,7 @@ impl App {
         }
 
         self.selected_files.clear();
+        self.save_selection();
         self.refresh_status();
     }
 
@@ -952,6 +982,50 @@ impl App {
         }
     }
 
+    /// Persist the current selection to disk.
+    pub fn save_selection(&self) {
+        self.save_selection_to(&selection_path());
+    }
+
+    fn save_selection_to(&self, path: &Path) {
+        if self.selected_files.is_empty() {
+            if path.exists() && fs::remove_file(path).is_err() {
+                warn!("Failed to remove selection file {:?}", path);
+            }
+            return;
+        }
+        if let Some(parent) = path.parent() {
+            if let Err(e) = fs::create_dir_all(parent) {
+                warn!("Could not create selection directory {:?}: {}", parent, e);
+                return;
+            }
+        }
+        let mut selected: Vec<&str> = self.selected_files.iter().map(String::as_str).collect();
+        selected.sort_unstable();
+        let payload = format!("{}\n", selected.join("\n"));
+        if let Err(e) = fs::write(path, payload) {
+            warn!("Failed to save selection {:?}: {}", path, e);
+        }
+    }
+
+    /// Load persisted selection from disk, ignoring files no longer present.
+    pub fn load_selection(&mut self) {
+        self.load_selection_from(&selection_path());
+    }
+
+    fn load_selection_from(&mut self, path: &Path) {
+        self.selected_files.clear();
+        let Ok(contents) = fs::read_to_string(path) else {
+            return;
+        };
+        let known_files: HashSet<&str> = self.file_list.iter().map(|f| f.path.as_str()).collect();
+        for line in contents.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            if known_files.contains(line) {
+                self.selected_files.insert(line.to_string());
+            }
+        }
+    }
+
     /// Run `svn commit` with the current `commit_message`.
     /// Commits the explicitly selected files, or all changed files if none are selected.
     /// Clears the selection and commit message on success; keeps them on failure so the
@@ -1083,6 +1157,7 @@ impl App {
 
         if commit_succeeded {
             self.selected_files.clear();
+            self.save_selection();
             self.commit_message.clear();
             self.commit_message_cursor = 0;
             self.commit_username.clear();
@@ -1202,6 +1277,7 @@ impl App {
                     warn!("Invalid revision number: {rev_num}");
                     self.current_diff = vec![Line::from("Invalid revision number".to_string())];
                     self.diff_scroll = 0;
+                    self.current_diff_file = None;
                     return;
                 }
                 let mut cmd = Command::new("svn");
@@ -1233,8 +1309,64 @@ impl App {
                 self.current_diff = diff_lines;
 
                 self.diff_scroll = 0;
+                self.current_diff_file = None;
             }
         }
+        self.refresh_revision_files();
+    }
+
+    pub fn refresh_revision_files(&mut self) {
+        self.revision_files.clear();
+        let Some(i) = self.revision_list_state.selected() else {
+            self.revision_file_list_state.select(None);
+            return;
+        };
+        let Some(rev) = self.revision_list.get(i) else {
+            self.revision_file_list_state.select(None);
+            return;
+        };
+
+        let rev_num = Self::revision_number(&rev.revision);
+        if !rev_num.chars().all(|c| c.is_ascii_digit()) {
+            self.revision_file_list_state.select(None);
+            return;
+        }
+
+        let mut cmd = Command::new("svn");
+        cmd.arg("diff").arg("--summarize").arg("-c").arg(rev_num);
+        if let Some(url) = &self.repository_url {
+            cmd.arg(url);
+        }
+        let output = cmd
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+
+        self.revision_files = output
+            .lines()
+            .filter_map(|line| {
+                let mut parts = line.split_whitespace();
+                let status = parts.next()?.to_string();
+                let path = parts.collect::<Vec<_>>().join(" ");
+                if path.is_empty() {
+                    None
+                } else {
+                    Some(SvnRevisionFile { status, path })
+                }
+            })
+            .collect();
+
+        if self.revision_files.is_empty() {
+            self.revision_file_list_state.select(None);
+            return;
+        }
+
+        let idx = self
+            .revision_file_list_state
+            .selected()
+            .unwrap_or(0)
+            .min(self.revision_files.len().saturating_sub(1));
+        self.revision_file_list_state.select(Some(idx));
     }
 
     pub fn next_revision(&mut self) {
@@ -1275,6 +1407,76 @@ impl App {
         self.refresh_revision_diff();
     }
 
+    pub fn next_revision_file(&mut self) {
+        let len = self.revision_files.len();
+        if len == 0 {
+            return;
+        }
+        let i = match self.revision_file_list_state.selected() {
+            Some(i) if i + 1 < len => i + 1,
+            _ => 0,
+        };
+        self.revision_file_list_state.select(Some(i));
+        self.refresh_revision_file_diff();
+    }
+
+    pub fn previous_revision_file(&mut self) {
+        let len = self.revision_files.len();
+        if len == 0 {
+            return;
+        }
+        let i = match self.revision_file_list_state.selected() {
+            Some(0) | None => len - 1,
+            Some(i) => i - 1,
+        };
+        self.revision_file_list_state.select(Some(i));
+        self.refresh_revision_file_diff();
+    }
+
+    pub fn refresh_revision_file_diff(&mut self) {
+        let Some(rev_idx) = self.revision_list_state.selected() else {
+            return;
+        };
+        let Some(file_idx) = self.revision_file_list_state.selected() else {
+            return;
+        };
+        let Some(rev) = self.revision_list.get(rev_idx) else {
+            return;
+        };
+        let Some(file) = self.revision_files.get(file_idx) else {
+            return;
+        };
+
+        let rev_num = Self::revision_number(&rev.revision);
+        if !rev_num.chars().all(|c| c.is_ascii_digit()) {
+            return;
+        }
+
+        let output = Command::new("svn")
+            .arg("diff")
+            .arg("-c")
+            .arg(rev_num)
+            .arg(&file.path)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_else(|e| {
+                error!("Failed to fetch revision file diff for {}: {e}", file.path);
+                "Error fetching revision file diff".into()
+            });
+
+        let header = Line::from(Span::styled(
+            format!("Revision {} file: {}", rev.revision, file.path),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+        let mut diff_lines = Self::style_diff_output(&output);
+        diff_lines.insert(0, header);
+        self.current_diff = diff_lines;
+        self.current_diff_file = None;
+        self.diff_scroll = 0;
+    }
+
     pub fn update_to_revision(&mut self) {
         if let Some(i) = self.revision_list_state.selected() {
             if let Some(rev) = self.revision_list.get(i) {
@@ -1312,6 +1514,7 @@ impl App {
 
                 self.current_diff = Self::style_diff_output(&output);
                 self.diff_scroll = 0;
+                self.current_diff_file = Some(path);
             }
         }
     }

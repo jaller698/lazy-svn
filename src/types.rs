@@ -11,6 +11,8 @@ pub enum ActiveWindow {
     ChangedFiles,
     Branches,
     Revisions,
+    /// Shows the list of files changed in the currently selected revision.
+    RevisionFiles,
     Diff,
     Commit,
     Help,
@@ -30,6 +32,14 @@ pub struct SvnRevision {
     pub author: String,
     pub date: String,
     pub message: String,
+}
+
+/// A file entry returned by `svn diff --summarize -c <rev>`.
+pub struct SvnRevisionFile {
+    /// SVN status character (e.g. `"M"`, `"A"`, `"D"`).
+    pub status: String,
+    /// Full repository URL or working-copy-relative path of the file.
+    pub path: String,
 }
 
 /// A single entry in the visible file-tree list.
@@ -91,6 +101,14 @@ pub const KEYBINDINGS: &[Keybinding] = &[
     Keybinding {
         key: "4",
         description: "Switch to Diff panel",
+    },
+    Keybinding {
+        key: "f",
+        description: "Browse files changed in selected revision (Revisions panel only)",
+    },
+    Keybinding {
+        key: "x",
+        description: "Revert current diff hunk in working copy (Diff panel, working copy files only)",
     },
     Keybinding {
         key: "j",
