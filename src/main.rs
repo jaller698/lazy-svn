@@ -305,6 +305,11 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                             app.refresh_log();
                         }
                     }
+                    KeyCode::Char('l') => {
+                        if app.active_window == ActiveWindow::Revisions {
+                            app.load_more_revisions();
+                        }
+                    }
                     // Enter: fold/unfold directory in ChangedFiles; update revision in Revisions.
                     KeyCode::Enter => match app.active_window {
                         ActiveWindow::ChangedFiles => app.toggle_folder(),
