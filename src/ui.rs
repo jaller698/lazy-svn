@@ -164,49 +164,67 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         .as_deref()
         .and_then(|r| r.parse().ok());
 
-    let rev_items: Vec<ListItem> = app
-        .revision_list
-        .iter()
-        .map(|rev| {
-            let rev_num: Option<u64> = rev.revision.trim_start_matches('r').parse().ok();
-
-            let is_current = rev_num.is_some() && rev_num == wc_rev_num;
-            let is_remote = match (rev_num, wc_rev_num) {
-                (Some(r), Some(wc)) => r > wc,
-                _ => false,
-            };
-
-            let label = if rev.message.is_empty() {
-                format!("{} | {} | {}", rev.revision, rev.author, rev.date)
-            } else {
-                format!(
-                    "{} | {} | {} | {}",
-                    rev.revision, rev.author, rev.date, rev.message
-                )
-            };
-
-            if is_current {
-                ListItem::new(format!("{} [working copy]", label))
-                    .style(Style::default().fg(Color::Cyan))
-            } else if is_remote {
-                ListItem::new(format!("{} [remote]", label))
-                    .style(Style::default().fg(Color::Yellow))
-            } else {
-                ListItem::new(label)
-            }
-        })
-        .collect();
-
-    let rev_border_color = if app.active_window == ActiveWindow::Revisions {
+    let rev_border_color = if app.active_window == ActiveWindow::Revisions
+        || app.active_window == ActiveWindow::RevisionFiles
+    {
         Color::Yellow
     } else {
         Color::Gray
     };
 
+    let (rev_items, rev_title, use_revision_file_state): (Vec<ListItem>, &str, bool) =
+        if app.active_window == ActiveWindow::RevisionFiles {
+            (
+                app.revision_files
+                    .iter()
+                    .map(|f| ListItem::new(format!("{} {}", f.status, f.path)))
+                    .collect(),
+                " 3: Revision Files (j/k: navigate | Enter: open diff | Esc: back) ",
+                true,
+            )
+        } else {
+            (
+                app.revision_list
+                    .iter()
+                    .map(|rev| {
+                        let rev_num: Option<u64> =
+                            rev.revision.trim_start_matches('r').parse().ok();
+
+                        let is_current = rev_num.is_some() && rev_num == wc_rev_num;
+                        let is_remote = match (rev_num, wc_rev_num) {
+                            (Some(r), Some(wc)) => r > wc,
+                            _ => false,
+                        };
+
+                        let label = if rev.message.is_empty() {
+                            format!("{} | {} | {}", rev.revision, rev.author, rev.date)
+                        } else {
+                            format!(
+                                "{} | {} | {} | {}",
+                                rev.revision, rev.author, rev.date, rev.message
+                            )
+                        };
+
+                        if is_current {
+                            ListItem::new(format!("{} [working copy]", label))
+                                .style(Style::default().fg(Color::Cyan))
+                        } else if is_remote {
+                            ListItem::new(format!("{} [remote]", label))
+                                .style(Style::default().fg(Color::Yellow))
+                        } else {
+                            ListItem::new(label)
+                        }
+                    })
+                    .collect(),
+                " 3: Revisions (j/k: navigate | Enter: update | f: files) ",
+                false,
+            )
+        };
+
     let rev_list = List::new(rev_items)
         .block(
             Block::default()
-                .title(" 3: Revisions (j/k: navigate | Enter: update) ")
+                .title(rev_title)
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(rev_border_color)),
         )
@@ -217,7 +235,11 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         )
         .highlight_symbol(">> ");
 
-    f.render_stateful_widget(rev_list, left_chunks[2], &mut app.revision_list_state);
+    if use_revision_file_state {
+        f.render_stateful_widget(rev_list, left_chunks[2], &mut app.revision_file_list_state);
+    } else {
+        f.render_stateful_widget(rev_list, left_chunks[2], &mut app.revision_list_state);
+    }
 
     // Diff View
     let diff_style = if app.active_window == ActiveWindow::Diff {
