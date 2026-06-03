@@ -198,6 +198,23 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                     continue;
                 }
 
+                // When the confirm-revert popup is open, only y/n/Esc are active.
+                if app.active_window == ActiveWindow::ConfirmRevert {
+                    match key.code {
+                        KeyCode::Char('y') => {
+                            log::info!("User confirmed revert");
+                            app.confirm_revert();
+                        }
+                        KeyCode::Char('n') | KeyCode::Esc => {
+                            log::debug!("Revert cancelled");
+                            app.revert_targets.clear();
+                            app.active_window = ActiveWindow::ChangedFiles;
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 // When the confirm-ignore popup is open, only y/n/Esc are active.
                 if app.active_window == ActiveWindow::ConfirmIgnore {
                     match key.code {
@@ -261,6 +278,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                             ActiveWindow::Commit => ActiveWindow::ChangedFiles,
                             ActiveWindow::Help => ActiveWindow::ChangedFiles,
                             ActiveWindow::ConfirmDelete => ActiveWindow::ChangedFiles,
+                            ActiveWindow::ConfirmRevert => ActiveWindow::ChangedFiles,
                             ActiveWindow::ConfirmIgnore => ActiveWindow::ChangedFiles,
                         };
                         log::debug!("Switched active window to {:?}", app.active_window);
@@ -274,6 +292,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                         ActiveWindow::Commit => {}
                         ActiveWindow::Help => {}
                         ActiveWindow::ConfirmDelete => {}
+                        ActiveWindow::ConfirmRevert => {}
                         ActiveWindow::ConfirmIgnore => {}
                     },
                     KeyCode::Char('k') => match app.active_window {
@@ -285,6 +304,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                         ActiveWindow::Commit => {}
                         ActiveWindow::Help => {}
                         ActiveWindow::ConfirmDelete => {}
+                        ActiveWindow::ConfirmRevert => {}
                         ActiveWindow::ConfirmIgnore => {}
                     },
                     KeyCode::Char('}') => {
@@ -300,7 +320,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                     KeyCode::Char('r') => {
                         if app.active_window == ActiveWindow::ChangedFiles {
                             app.svn_revert_marked();
-                            log::debug!("Ran svn revert on marked files");
+                            log::debug!("Opened revert confirmation for marked files");
                         } else {
                             log::info!("Refreshing all data");
                             app.refresh_status();
