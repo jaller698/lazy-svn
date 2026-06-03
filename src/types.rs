@@ -18,6 +18,8 @@ pub enum ActiveWindow {
     Help,
     /// Shown when the user presses 'd'; waits for y/n confirmation.
     ConfirmDelete,
+    /// Shown when the user presses 'r' in files; waits for y/n confirmation.
+    ConfirmRevert,
     /// Shown when the user presses 'i'; waits for y/n confirmation.
     ConfirmIgnore,
 }
@@ -128,7 +130,7 @@ pub const KEYBINDINGS: &[Keybinding] = &[
     },
     Keybinding {
         key: "r",
-        description: "Revert marked files (Files panel) / Refresh all data (other panels)",
+        description: "Revert marked files via svn revert (Files panel, asks for confirmation) / Refresh all data (other panels)",
     },
     Keybinding {
         key: "l",

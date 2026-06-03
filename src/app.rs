@@ -182,6 +182,8 @@ pub struct App {
     pub commit_active_field: CommitField,
     /// Targets pending y/n confirmation before `svn delete` runs.
     pub delete_targets: Vec<String>,
+    /// Targets pending y/n confirmation before `svn revert` runs.
+    pub revert_targets: Vec<String>,
     /// Backup created before the last `svn delete`.
     /// Tuple of (backup_dir, original_paths); cleared after undo.
     pub last_backup: Option<(PathBuf, Vec<String>)>,
@@ -220,6 +222,7 @@ impl App {
             commit_password: String::new(),
             commit_active_field: CommitField::Message,
             delete_targets: Vec::new(),
+            revert_targets: Vec::new(),
             last_backup: None,
             ignore_patterns: Vec::new(),
             ignore_target: None,
@@ -278,6 +281,7 @@ impl App {
             commit_password: String::new(),
             commit_active_field: CommitField::Message,
             delete_targets: Vec::new(),
+            revert_targets: Vec::new(),
             last_backup: None,
             ignore_patterns: Vec::new(),
             ignore_target: None,
@@ -715,9 +719,9 @@ impl App {
         self.refresh_status();
     }
 
-    /// Run `svn revert` on the marked files/folders.
+    /// Prepare `svn revert` for the marked files/folders.
     /// If no files are marked, operates on the currently selected item.
-    /// Refreshes the status afterwards.
+    /// Transitions to the ConfirmRevert window so the user can confirm.
     pub fn svn_revert_marked(&mut self) {
         let targets: Vec<String> = if self.selected_files.is_empty() {
             if let Some(i) = self.file_list_state.selected() {
@@ -746,6 +750,19 @@ impl App {
             return;
         }
 
+        self.revert_targets = targets;
+        self.active_window = ActiveWindow::ConfirmRevert;
+    }
+
+    /// Called when the user confirms the revert prompt (presses 'y').
+    /// Runs `svn revert --depth infinity` on the pending targets.
+    pub fn confirm_revert(&mut self) {
+        let targets: Vec<String> = std::mem::take(&mut self.revert_targets);
+        if targets.is_empty() {
+            self.active_window = ActiveWindow::ChangedFiles;
+            return;
+        }
+
         info!("Running svn revert for {} item(s)", targets.len());
         let mut cmd = Command::new("svn");
         cmd.arg("revert")
@@ -764,6 +781,7 @@ impl App {
 
         self.selected_files.clear();
         self.save_selection();
+        self.active_window = ActiveWindow::ChangedFiles;
         self.refresh_status();
     }
 
@@ -2254,6 +2272,43 @@ mod tests {
         app.svn_delete_marked();
         assert_eq!(app.active_window, ActiveWindow::ChangedFiles);
         assert!(app.delete_targets.is_empty());
+    }
+
+    // ── svn_revert_marked ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_svn_revert_marked_no_selection_uses_hovered_file() {
+        let mut app = App::test_new();
+        app.file_list = vec![svn_file("M", "foo.rs")];
+        app.rebuild_visible_items();
+        app.file_list_state.select(Some(0));
+
+        app.svn_revert_marked();
+        assert_eq!(app.active_window, ActiveWindow::ConfirmRevert);
+        assert_eq!(app.revert_targets, vec!["foo.rs".to_string()]);
+    }
+
+    #[test]
+    fn test_svn_revert_marked_with_selected_files() {
+        let mut app = App::test_new();
+        app.file_list = vec![svn_file("M", "a.rs"), svn_file("M", "b.rs")];
+        app.rebuild_visible_items();
+        app.selected_files.insert("a.rs".to_string());
+        app.selected_files.insert("b.rs".to_string());
+
+        app.svn_revert_marked();
+        assert_eq!(app.active_window, ActiveWindow::ConfirmRevert);
+        let mut targets = app.revert_targets.clone();
+        targets.sort();
+        assert_eq!(targets, vec!["a.rs".to_string(), "b.rs".to_string()]);
+    }
+
+    #[test]
+    fn test_svn_revert_marked_no_items_does_nothing() {
+        let mut app = App::test_new();
+        app.svn_revert_marked();
+        assert_eq!(app.active_window, ActiveWindow::ChangedFiles);
+        assert!(app.revert_targets.is_empty());
     }
 
     // ── ignore_current_file ──────────────────────────────────────────────────
