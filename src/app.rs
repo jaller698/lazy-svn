@@ -723,7 +723,7 @@ impl App {
     /// If no files are marked, operates on the currently selected item.
     /// Transitions to the ConfirmRevert window so the user can confirm.
     pub fn svn_revert_marked(&mut self) {
-        let targets: Vec<String> = if self.selected_files.is_empty() {
+        let targets: Vec<String> =
             if let Some(i) = self.file_list_state.selected() {
                 match self.visible_items.get(i) {
                     Some(FileTreeNode::File { path, .. }) => vec![path.clone()],
@@ -741,9 +741,6 @@ impl App {
             } else {
                 vec![]
             }
-        } else {
-            self.selected_files.iter().cloned().collect()
-        };
 
         if targets.is_empty() {
             debug!("svn_revert_marked: nothing to revert");
