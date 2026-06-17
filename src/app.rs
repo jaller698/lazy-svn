@@ -5,12 +5,14 @@ use ratatui::{
 };
 use std::collections::{BTreeSet, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
-use crate::types::{ActiveWindow, CommitField, FileTreeNode, SvnFile, SvnRevision, SvnRevisionFile};
+use crate::types::{
+    ActiveWindow, CommitField, FileTreeNode, SvnFile, SvnRevision, SvnRevisionFile,
+};
 use log::{debug, error, info, warn};
 
 const REVISION_LOAD_BATCH_SIZE: usize = 50;
@@ -309,11 +311,7 @@ impl App {
                     None
                 }
             })
-            .filter(|f| {
-                !patterns
-                    .iter()
-                    .any(|p| matches_ignore_pattern(&f.path, p))
-            })
+            .filter(|f| !patterns.iter().any(|p| matches_ignore_pattern(&f.path, p)))
             .collect();
 
         info!("SVN status: {} changed file(s)", self.file_list.len());
@@ -687,9 +685,7 @@ impl App {
         let path = ignore_file_path();
         // Read existing contents so we can append without duplicating.
         let existing = fs::read_to_string(&path).unwrap_or_default();
-        let already_present = existing
-            .lines()
-            .any(|l| l.trim() == target.as_str());
+        let already_present = existing.lines().any(|l| l.trim() == target.as_str());
 
         if !already_present {
             let new_line = if existing.ends_with('\n') || existing.is_empty() {
@@ -723,24 +719,23 @@ impl App {
     /// If no files are marked, operates on the currently selected item.
     /// Transitions to the ConfirmRevert window so the user can confirm.
     pub fn svn_revert_marked(&mut self) {
-        let targets: Vec<String> =
-            if let Some(i) = self.file_list_state.selected() {
-                match self.visible_items.get(i) {
-                    Some(FileTreeNode::File { path, .. }) => vec![path.clone()],
-                    Some(FileTreeNode::Dir { path, .. }) => {
-                        // `path` always ends with `/` so `starts_with` is an
-                        // exact directory-boundary match.
-                        self.file_list
-                            .iter()
-                            .filter(|f| f.path.starts_with(path.as_str()))
-                            .map(|f| f.path.clone())
-                            .collect()
-                    }
-                    None => vec![],
+        let targets: Vec<String> = if let Some(i) = self.file_list_state.selected() {
+            match self.visible_items.get(i) {
+                Some(FileTreeNode::File { path, .. }) => vec![path.clone()],
+                Some(FileTreeNode::Dir { path, .. }) => {
+                    // `path` always ends with `/` so `starts_with` is an
+                    // exact directory-boundary match.
+                    self.file_list
+                        .iter()
+                        .filter(|f| f.path.starts_with(path.as_str()))
+                        .map(|f| f.path.clone())
+                        .collect()
                 }
-            } else {
-                vec![]
+                None => vec![],
             }
+        } else {
+            vec![]
+        };
 
         if targets.is_empty() {
             debug!("svn_revert_marked: nothing to revert");
@@ -888,10 +883,7 @@ impl App {
         let lines: Vec<&str> = self.commit_message.split('\n').collect();
         let target_line = lines[line_idx - 1];
         let target_col = col.min(target_line.chars().count());
-        let start_of_target: usize = lines[..line_idx - 1]
-            .iter()
-            .map(|l| l.len() + 1)
-            .sum();
+        let start_of_target: usize = lines[..line_idx - 1].iter().map(|l| l.len() + 1).sum();
         let col_bytes: usize = target_line
             .chars()
             .take(target_col)
@@ -911,10 +903,7 @@ impl App {
         }
         let target_line = lines[line_idx + 1];
         let target_col = col.min(target_line.chars().count());
-        let start_of_target: usize = lines[..line_idx + 1]
-            .iter()
-            .map(|l| l.len() + 1)
-            .sum();
+        let start_of_target: usize = lines[..line_idx + 1].iter().map(|l| l.len() + 1).sum();
         let col_bytes: usize = target_line
             .chars()
             .take(target_col)
@@ -1842,8 +1831,14 @@ mod tests {
 
         // Simulate filtering.
         let files = vec![
-            SvnFile { status: "M".into(), path: "src/main.rs".into() },
-            SvnFile { status: "?".into(), path: "src/debug.log".into() },
+            SvnFile {
+                status: "M".into(),
+                path: "src/main.rs".into(),
+            },
+            SvnFile {
+                status: "?".into(),
+                path: "src/debug.log".into(),
+            },
         ];
         let filtered: Vec<_> = files
             .iter()
@@ -2131,7 +2126,10 @@ mod tests {
         App::build_tree_for_prefix("", 0, &files, &collapsed, &mut result);
         // Only the dir row is visible; its children are suppressed.
         assert_eq!(result.len(), 1);
-        if let FileTreeNode::Dir { collapsed, path, .. } = &result[0] {
+        if let FileTreeNode::Dir {
+            collapsed, path, ..
+        } = &result[0]
+        {
             assert!(collapsed, "dir should be marked collapsed");
             assert_eq!(path, "src/");
         } else {
@@ -2494,11 +2492,7 @@ mod tests {
     #[test]
     fn test_scroll_diff_down_increments() {
         let mut app = App::test_new();
-        app.current_diff = vec![
-            Line::from("a"),
-            Line::from("b"),
-            Line::from("c"),
-        ];
+        app.current_diff = vec![Line::from("a"), Line::from("b"), Line::from("c")];
         app.diff_scroll = 0;
 
         app.scroll_diff_down();
@@ -2587,15 +2581,19 @@ mod tests {
         let output = "+added line\n+++not a change\ncontext";
         let lines = App::style_diff_output(output);
         // Line starting with `+` (not `+++`) → green foreground.
-        assert!(lines[0]
-            .spans
-            .iter()
-            .any(|s| s.style.fg == Some(Color::Green)));
+        assert!(
+            lines[0]
+                .spans
+                .iter()
+                .any(|s| s.style.fg == Some(Color::Green))
+        );
         // Line starting with `+++` → no green foreground.
-        assert!(lines[1]
-            .spans
-            .iter()
-            .all(|s| s.style.fg != Some(Color::Green)));
+        assert!(
+            lines[1]
+                .spans
+                .iter()
+                .all(|s| s.style.fg != Some(Color::Green))
+        );
         // Plain context line → no foreground colour.
         assert!(lines[2].spans.iter().all(|s| s.style.fg.is_none()));
     }
@@ -2605,15 +2603,19 @@ mod tests {
         let output = "-removed\n---not a removal\ncontext";
         let lines = App::style_diff_output(output);
         // `-` lines are red.
-        assert!(lines[0]
-            .spans
-            .iter()
-            .any(|s| s.style.fg == Some(Color::Red)));
+        assert!(
+            lines[0]
+                .spans
+                .iter()
+                .any(|s| s.style.fg == Some(Color::Red))
+        );
         // `---` lines have no red foreground.
-        assert!(lines[1]
-            .spans
-            .iter()
-            .all(|s| s.style.fg != Some(Color::Red)));
+        assert!(
+            lines[1]
+                .spans
+                .iter()
+                .all(|s| s.style.fg != Some(Color::Red))
+        );
     }
 
     #[test]
@@ -2621,10 +2623,12 @@ mod tests {
         let output = "@@ -1,3 +1,3 @@\ncontext";
         let lines = App::style_diff_output(output);
         // `@@` lines are cyan.
-        assert!(lines[0]
-            .spans
-            .iter()
-            .any(|s| s.style.fg == Some(Color::Cyan)));
+        assert!(
+            lines[0]
+                .spans
+                .iter()
+                .any(|s| s.style.fg == Some(Color::Cyan))
+        );
         // Context lines have no foreground colour.
         assert!(lines[1].spans.iter().all(|s| s.style.fg.is_none()));
     }
