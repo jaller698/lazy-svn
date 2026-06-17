@@ -715,8 +715,8 @@ impl App {
         self.refresh_status();
     }
 
-    /// Prepare `svn revert` for the marked files/folders.
-    /// If no files are marked, operates on the currently selected item.
+    /// Prepare `svn revert` for the currently highlighted item.
+    /// Ignores any marked selection and always operates on the current item.
     /// Transitions to the ConfirmRevert window so the user can confirm.
     pub fn svn_revert_marked(&mut self) {
         let targets: Vec<String> = if let Some(i) = self.file_list_state.selected() {
