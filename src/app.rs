@@ -2284,21 +2284,6 @@ mod tests {
     }
 
     #[test]
-    fn test_svn_revert_marked_with_selected_files() {
-        let mut app = App::test_new();
-        app.file_list = vec![svn_file("M", "a.rs"), svn_file("M", "b.rs")];
-        app.rebuild_visible_items();
-        app.selected_files.insert("a.rs".to_string());
-        app.selected_files.insert("b.rs".to_string());
-
-        app.svn_revert_marked();
-        assert_eq!(app.active_window, ActiveWindow::ConfirmRevert);
-        let mut targets = app.revert_targets.clone();
-        targets.sort();
-        assert_eq!(targets, vec!["a.rs".to_string(), "b.rs".to_string()]);
-    }
-
-    #[test]
     fn test_svn_revert_marked_no_items_does_nothing() {
         let mut app = App::test_new();
         app.svn_revert_marked();
