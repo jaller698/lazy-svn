@@ -23,11 +23,6 @@ fn nvim_server_address() -> Option<String> {
     std::env::var("NVIM")
         .ok()
         .filter(|value| !value.is_empty())
-        .or_else(|| {
-            std::env::var("NVIM_LISTEN_ADDRESS")
-                .ok()
-                .filter(|value| !value.is_empty())
-        })
 }
 
 /// Escape a string for single-quoted Vimscript string literal usage.
@@ -1641,7 +1636,9 @@ impl App {
 
     pub fn open_current_diff_in_nvim(&self) {
         let Some(server) = nvim_server_address() else {
-            warn!("Cannot open diff in Neovim: NVIM server address was not found");
+            warn!(
+                "Cannot open diff in Neovim: NVIM server address was not found (expected NVIM from v:servername)"
+            );
             return;
         };
 

@@ -35,6 +35,8 @@ The `build` step compiles the Rust binary **once on install** (or when you run `
 
 Opens the lazySVN TUI in a snacks terminal window.
 
+When opened via `:LazySVN`, the plugin exports `NVIM` from Neovim's `v:servername` so file diffs can be opened back in the current Neovim instance.
+
 ### Suggested keymaps
 
 Add a keymap in your config to open lazySVN quickly:

@@ -34,6 +34,11 @@ function M.open()
 		vim.notify("lazySVN: snacks.nvim is required but not available.", vim.log.levels.ERROR)
 		return
 	end
+
+	if vim.v.servername and vim.v.servername ~= "" then
+		vim.env.NVIM = vim.v.servername
+	end
+
 	snacks.terminal(bin)
 end
 
