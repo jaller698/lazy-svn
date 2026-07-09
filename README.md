@@ -66,6 +66,7 @@ vim.keymap.set("n", "<leader>sv", "<cmd>LazySVN<cr>", { desc = "Open lazySVN" })
 | `j`   | Move down in file list        |
 | `k`   | Move up in file list          |
 | `Tab` | Switch between panels         |
+| `o`   | Open current file diff in Neovim diff view (Diff panel) |
 | `r`   | Refresh SVN status            |
 | `l`   | Load 50 more revisions        |
 | `q`   | Quit                          |

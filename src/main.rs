@@ -317,6 +317,11 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
                             app.scroll_diff_prev_hunk();
                         }
                     }
+                    KeyCode::Char('o') => {
+                        if app.active_window == ActiveWindow::Diff {
+                            app.open_current_diff_in_nvim();
+                        }
+                    }
                     KeyCode::Char('r') => {
                         if app.active_window == ActiveWindow::ChangedFiles {
                             app.svn_revert_marked();

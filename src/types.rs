@@ -129,6 +129,10 @@ pub const KEYBINDINGS: &[Keybinding] = &[
         description: "Jump to previous hunk (Diff panel only)",
     },
     Keybinding {
+        key: "o",
+        description: "Open current file diff in Neovim diff view (Diff panel only)",
+    },
+    Keybinding {
         key: "r",
         description: "Revert marked files via svn revert (Files panel, asks for confirmation) / Refresh all data (other panels)",
     },
