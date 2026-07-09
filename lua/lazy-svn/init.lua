@@ -37,12 +37,52 @@ function M.open()
 	snacks.terminal(bin)
 end
 
+--- Open two files in a Neovim diff view.
+--- This is called from the Rust binary via `nvim --remote-expr`.
+---@param left string
+---@param right string
+---@param title string
+---@return integer
+function M.open_diff(left, right, title)
+	if not left or not right then
+		vim.notify("lazySVN: missing diff file paths.", vim.log.levels.ERROR)
+		return 0
+	end
+
+	vim.schedule(function()
+		vim.cmd("tabnew " .. vim.fn.fnameescape(left))
+		vim.cmd("vert diffsplit " .. vim.fn.fnameescape(right))
+
+		local right_win = vim.api.nvim_get_current_win()
+		vim.wo[right_win].number = true
+		vim.wo[right_win].relativenumber = false
+		vim.bo.readonly = true
+		vim.bo.modifiable = false
+		vim.bo.bufhidden = "wipe"
+
+		vim.cmd("wincmd h")
+		local left_win = vim.api.nvim_get_current_win()
+		vim.wo[left_win].number = true
+		vim.wo[left_win].relativenumber = false
+		vim.bo.readonly = true
+		vim.bo.modifiable = false
+		vim.bo.bufhidden = "wipe"
+
+		if title and title ~= "" then
+			vim.api.nvim_echo({ { "lazySVN diff: " .. title, "Title" } }, false, {})
+		end
+	end)
+
+	return 1
+end
+
 --- Setup the plugin.
 --- Creates the `:LazySVN` user command.
 ---@param opts? table
 function M.setup(opts)
 	opts = opts or {}
 	vim.api.nvim_create_user_command("LazySVN", M.open, { desc = "Open lazySVN TUI" })
+	_G.LazySvnOpenDiff = M.open_diff
 end
 
 return M

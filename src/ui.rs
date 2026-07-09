@@ -254,7 +254,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let diff_paragraph = Paragraph::new(app.current_diff.clone())
         .block(
             Block::default()
-                .title(" 4: Diff View (j/k: scroll | {/}: hunk) ")
+                .title(" 4: Diff View (j/k: scroll | {/}: hunk | o: open in Neovim) ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(diff_style)),
         )

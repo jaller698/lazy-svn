@@ -9,6 +9,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::types::{
     ActiveWindow, CommitField, FileTreeNode, SvnFile, SvnRevision, SvnRevisionFile,
@@ -16,6 +17,53 @@ use crate::types::{
 use log::{debug, error, info, warn};
 
 const REVISION_LOAD_BATCH_SIZE: usize = 50;
+
+/// Returns the connected Neovim server address from the environment.
+fn nvim_server_address() -> Option<String> {
+    std::env::var("NVIM")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            std::env::var("NVIM_LISTEN_ADDRESS")
+                .ok()
+                .filter(|value| !value.is_empty())
+        })
+}
+
+/// Escape a string for single-quoted Vimscript string literal usage.
+fn vim_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn build_nvim_open_diff_expr(left: &Path, right: &Path, title: &str) -> String {
+    format!(
+        "v:lua.LazySvnOpenDiff({},{},{})",
+        vim_single_quote(left.to_string_lossy().as_ref()),
+        vim_single_quote(right.to_string_lossy().as_ref()),
+        vim_single_quote(title),
+    )
+}
+
+fn temp_diff_file_path(hint: &str, side: &str) -> PathBuf {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let sanitized: String = hint
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    std::env::temp_dir().join(format!(
+        "lazysvn-{}-{}-{}.tmp",
+        sanitized, side, millis
+    ))
+}
 
 /// Returns the path to the lazysvn ignore file (`~/.config/lazysvn/ignore`).
 fn ignore_file_path() -> PathBuf {
@@ -1501,6 +1549,142 @@ impl App {
         }
     }
 
+    fn svn_cat(target: &str, revision: &str) -> String {
+        let output = Command::new("svn")
+            .arg("cat")
+            .arg("-r")
+            .arg(revision)
+            .arg(target)
+            .output();
+        match output {
+            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).into_owned(),
+            Ok(out) => {
+                debug!(
+                    "svn cat failed for target '{}' @ {}: {}",
+                    target,
+                    revision,
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                String::new()
+            }
+            Err(e) => {
+                debug!("Failed to run svn cat for '{}' @ {}: {e}", target, revision);
+                String::new()
+            }
+        }
+    }
+
+    fn write_temp_diff_file(hint: &str, side: &str, content: &str) -> Option<PathBuf> {
+        let path = temp_diff_file_path(hint, side);
+        if let Err(e) = fs::write(&path, content) {
+            error!("Failed to write temporary diff file {}: {e}", path.display());
+            return None;
+        }
+        Some(path)
+    }
+
+    fn working_copy_diff_contents(&self, path: &str) -> (String, String, String) {
+        let status = self
+            .file_list
+            .iter()
+            .find(|entry| entry.path == path)
+            .map(|entry| entry.status.as_str())
+            .unwrap_or("");
+
+        let left = if status == "A" || status == "?" {
+            String::new()
+        } else {
+            Self::svn_cat(path, "BASE")
+        };
+
+        let right = if status == "D" {
+            String::new()
+        } else {
+            fs::read(path)
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                .unwrap_or_default()
+        };
+
+        (
+            left,
+            right,
+            format!("{} (working copy)", path),
+        )
+    }
+
+    fn revision_file_diff_contents(&self) -> Option<(String, String, String, String)> {
+        let rev_idx = self.revision_list_state.selected()?;
+        let file_idx = self.revision_file_list_state.selected()?;
+        let revision = self.revision_list.get(rev_idx)?;
+        let file = self.revision_files.get(file_idx)?;
+        let rev_num = Self::revision_number(&revision.revision);
+        if !rev_num.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        let rev_number = rev_num.parse::<u64>().ok()?;
+        let prev_rev = rev_number.saturating_sub(1).to_string();
+
+        let left = if file.status.starts_with('A') || rev_number == 0 {
+            String::new()
+        } else {
+            Self::svn_cat(&file.path, &prev_rev)
+        };
+        let right = if file.status.starts_with('D') {
+            String::new()
+        } else {
+            Self::svn_cat(&file.path, rev_num)
+        };
+        let title = format!("{} (r{} ↔ r{})", file.path, prev_rev, rev_num);
+
+        Some((left, right, title, file.path.clone()))
+    }
+
+    pub fn open_current_diff_in_nvim(&self) {
+        let Some(server) = nvim_server_address() else {
+            warn!("Cannot open diff in Neovim: NVIM server address was not found");
+            return;
+        };
+
+        let (left, right, title, hint) = if let Some(path) = self.current_diff_file.as_deref() {
+            let (left, right, title) = self.working_copy_diff_contents(path);
+            (left, right, title, path.to_string())
+        } else if let Some((left, right, title, hint)) = self.revision_file_diff_contents() {
+            (left, right, title, hint)
+        } else {
+            warn!("No file-level diff selected to open in Neovim");
+            return;
+        };
+
+        let Some(left_path) = Self::write_temp_diff_file(&hint, "left", &left) else {
+            return;
+        };
+        let Some(right_path) = Self::write_temp_diff_file(&hint, "right", &right) else {
+            return;
+        };
+
+        let expr = build_nvim_open_diff_expr(&left_path, &right_path, &title);
+        match Command::new("nvim")
+            .arg("--server")
+            .arg(&server)
+            .arg("--remote-expr")
+            .arg(&expr)
+            .status()
+        {
+            Ok(status) if status.success() => {
+                info!("Opened diff in Neovim for '{}'", title);
+            }
+            Ok(status) => {
+                warn!(
+                    "Neovim remote call failed with status {} while opening '{}'",
+                    status, title
+                );
+            }
+            Err(e) => {
+                error!("Failed to invoke Neovim remote command for '{}': {e}", title);
+            }
+        }
+    }
+
     pub fn refresh_diff(&mut self) {
         if let Some(i) = self.file_list_state.selected() {
             if let Some(FileTreeNode::File { path, .. }) = self.visible_items.get(i) {
@@ -2616,6 +2800,29 @@ mod tests {
         );
         // Context lines have no foreground colour.
         assert!(lines[1].spans.iter().all(|s| s.style.fg.is_none()));
+    }
+
+    // ── Neovim diff handoff helpers ────────────────────────────────────────────
+
+    #[test]
+    fn test_build_nvim_open_diff_expr_quotes_arguments() {
+        let left = Path::new("/tmp/left'file.rs");
+        let right = Path::new("/tmp/right file.rs");
+        let expr = build_nvim_open_diff_expr(left, right, "title's test");
+
+        assert_eq!(
+            expr,
+            "v:lua.LazySvnOpenDiff('/tmp/left''file.rs','/tmp/right file.rs','title''s test')"
+        );
+    }
+
+    #[test]
+    fn test_temp_diff_file_path_sanitizes_hint() {
+        let path = temp_diff_file_path("src/main.rs", "left");
+        let filename = path.file_name().unwrap_or_default().to_string_lossy();
+
+        assert!(filename.starts_with("lazysvn-src_main.rs-left-"));
+        assert!(filename.ends_with(".tmp"));
     }
 
     // ── revision_number ───────────────────────────────────────────────────────
